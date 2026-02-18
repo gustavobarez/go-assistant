@@ -17,9 +17,9 @@ export class GoInlayHintsProvider implements vscode.InlayHintsProvider {
   }
 
   private getConfig(): Config {
-    const config = vscode.workspace.getConfiguration("goHelper.inlayHints");
+    const config = vscode.workspace.getConfiguration("goAssistant.inlayHints");
     const inspectionsConfig = vscode.workspace.getConfiguration(
-      "goHelper.inspections",
+      "goAssistant.inspections",
     );
     return {
       enable: config.get<boolean>("enable", false),

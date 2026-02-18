@@ -46,7 +46,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
   }
 
   private getConfig(): Config {
-    const config = vscode.workspace.getConfiguration("goHelper.codelens");
+    const config = vscode.workspace.getConfiguration("goAssistant.codelens");
     return {
       enable: config.get<boolean>("enable", true),
       references: config.get<boolean>("references", true),
@@ -434,7 +434,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       const codeLens = new vscode.CodeLens(range, {
         title: title,
-        command: "go-helper.showReferences",
+        command: "go-assistant.showReferences",
         arguments: [document.uri, position, references],
       });
 
@@ -464,7 +464,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       const codeLens = new vscode.CodeLens(range, {
         title: title,
-        command: "go-helper.showReferences",
+        command: "go-assistant.showReferences",
         arguments: [document.uri, symbol.selectionRange.start, methods],
       });
 
@@ -495,7 +495,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       const codeLens = new vscode.CodeLens(range, {
         title: title,
-        command: "go-helper.showReferences",
+        command: "go-assistant.showReferences",
         arguments: [document.uri, symbol.selectionRange.start, implementers],
       });
 
@@ -526,7 +526,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       const codeLens = new vscode.CodeLens(range, {
         title: title,
-        command: "go-helper.showReferences",
+        command: "go-assistant.showReferences",
         arguments: [document.uri, symbol.selectionRange.start, implementations],
       });
 
@@ -1011,7 +1011,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       const codeLens = new vscode.CodeLens(range, {
         title: title,
-        command: "go-helper.showReferences",
+        command: "go-assistant.showReferences",
         arguments: [
           document.uri,
           new vscode.Position(packageInfo.line, 0),
@@ -1174,7 +1174,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
     try {
       return new vscode.CodeLens(symbol.selectionRange, {
         title: "move",
-        command: "go-helper.unifiedMove",
+        command: "go-assistant.unifiedMove",
         arguments: [document.uri, symbol, symbolType],
       });
     } catch (error) {
@@ -1206,7 +1206,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       return new vscode.CodeLens(symbol.selectionRange, {
         title: title,
-        command: "go-helper.showMethodInterfaces",
+        command: "go-assistant.showMethodInterfaces",
         arguments: [document.uri, symbol, interfaces],
       });
     } catch (error) {
@@ -1323,7 +1323,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       return new vscode.CodeLens(method.selectionRange, {
         title: title,
-        command: "go-helper.showReferences",
+        command: "go-assistant.showReferences",
         arguments: [document.uri, method.selectionRange.start, implementations],
       });
     } catch (error) {

@@ -11,7 +11,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
   ];
 
   private getConfig() {
-    const config = vscode.workspace.getConfiguration("goHelper.codeActions");
+    const config = vscode.workspace.getConfiguration("goAssistant.codeActions");
     return {
       enable: config.get<boolean>("enable", true),
       handleError: config.get<boolean>("handleError", true),
@@ -1400,7 +1400,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
           );
 
           showMethodsAction.command = {
-            command: "go-helper.showReferences",
+            command: "go-assistant.showReferences",
             title: "Show Methods",
             arguments: [document.uri, range.start, locations],
           };
@@ -1786,7 +1786,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       // Move parameter up
       if (currentParamIdx > 0) {
         const moveUpAction = new vscode.CodeAction(
-          `Move parameter up (Go Helper)`,
+          `Move parameter up (Go Assistant)`,
           vscode.CodeActionKind.Refactor,
         );
 
@@ -1812,7 +1812,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       // Move parameter down
       if (currentParamIdx < paramList.length - 1) {
         const moveDownAction = new vscode.CodeAction(
-          `Move parameter down (Go Helper)`,
+          `Move parameter down (Go Assistant)`,
           vscode.CodeActionKind.Refactor,
         );
 
@@ -1841,12 +1841,12 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
       if (paramNameMatch) {
         const renameAction = new vscode.CodeAction(
-          `Rename parameter "${paramNameMatch[1]}" (Go Helper)`,
+          `Rename parameter "${paramNameMatch[1]}" (Go Assistant)`,
           vscode.CodeActionKind.Refactor,
         );
 
         renameAction.command = {
-          command: "go-helper.renameParameter",
+          command: "go-assistant.renameParameter",
           title: "Rename Parameter",
           arguments: [document.uri, range.start.line, paramNameMatch[1]],
         };
@@ -2105,11 +2105,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Generate stub
     const generateAction = new vscode.CodeAction(
-      `Generate ${symbol.name}Stub (Go Helper)`,
+      `Generate ${symbol.name}Stub (Go Assistant)`,
       vscode.CodeActionKind.Refactor,
     );
     generateAction.command = {
-      command: "go-helper.generateInterfaceStub",
+      command: "go-assistant.generateInterfaceStub",
       title: "Generate Interface Stub",
       arguments: [document.uri, symbol],
     };
@@ -2125,11 +2125,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move up (only if not first)
     if (!isFirst) {
       const moveUpAction = new vscode.CodeAction(
-        `Move ${symbol.name} up (Go Helper)`,
+        `Move ${symbol.name} up (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveUpAction.command = {
-        command: "go-helper.moveSymbolUp",
+        command: "go-assistant.moveSymbolUp",
         title: "Move Symbol Up",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2139,11 +2139,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move down (only if not last)
     if (!isLast) {
       const moveDownAction = new vscode.CodeAction(
-        `Move ${symbol.name} down (Go Helper)`,
+        `Move ${symbol.name} down (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveDownAction.command = {
-        command: "go-helper.moveSymbolDown",
+        command: "go-assistant.moveSymbolDown",
         title: "Move Symbol Down",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2152,7 +2152,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Rename
     const renameAction = new vscode.CodeAction(
-      `Rename ${symbol.name} (Go Helper)`,
+      `Rename ${symbol.name} (Go Assistant)`,
       vscode.CodeActionKind.Refactor,
     );
     renameAction.command = {
@@ -2183,11 +2183,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move up (only if not first)
     if (!isFirst) {
       const moveUpAction = new vscode.CodeAction(
-        `Move ${symbol.name} up (Go Helper)`,
+        `Move ${symbol.name} up (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveUpAction.command = {
-        command: "go-helper.moveSymbolUp",
+        command: "go-assistant.moveSymbolUp",
         title: "Move Symbol Up",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2197,11 +2197,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move down (only if not last)
     if (!isLast) {
       const moveDownAction = new vscode.CodeAction(
-        `Move ${symbol.name} down (Go Helper)`,
+        `Move ${symbol.name} down (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveDownAction.command = {
-        command: "go-helper.moveSymbolDown",
+        command: "go-assistant.moveSymbolDown",
         title: "Move Symbol Down",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2210,7 +2210,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Rename
     const renameAction = new vscode.CodeAction(
-      `Rename ${symbol.name} (Go Helper)`,
+      `Rename ${symbol.name} (Go Assistant)`,
       vscode.CodeActionKind.Refactor,
     );
     renameAction.command = {
@@ -2241,11 +2241,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move up (only if not first)
     if (!isFirst) {
       const moveUpAction = new vscode.CodeAction(
-        `Move ${symbol.name} up (Go Helper)`,
+        `Move ${symbol.name} up (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveUpAction.command = {
-        command: "go-helper.moveSymbolUp",
+        command: "go-assistant.moveSymbolUp",
         title: "Move Symbol Up",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2255,11 +2255,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move down (only if not last)
     if (!isLast) {
       const moveDownAction = new vscode.CodeAction(
-        `Move ${symbol.name} down (Go Helper)`,
+        `Move ${symbol.name} down (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveDownAction.command = {
-        command: "go-helper.moveSymbolDown",
+        command: "go-assistant.moveSymbolDown",
         title: "Move Symbol Down",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2268,7 +2268,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Rename
     const renameAction = new vscode.CodeAction(
-      `Rename ${symbol.name} (Go Helper)`,
+      `Rename ${symbol.name} (Go Assistant)`,
       vscode.CodeActionKind.Refactor,
     );
     renameAction.command = {
@@ -2299,11 +2299,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move up (only if not first)
     if (!isFirst) {
       const moveUpAction = new vscode.CodeAction(
-        `Move ${symbol.name} up (Go Helper)`,
+        `Move ${symbol.name} up (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveUpAction.command = {
-        command: "go-helper.moveSymbolUp",
+        command: "go-assistant.moveSymbolUp",
         title: "Move Symbol Up",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2313,11 +2313,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move down (only if not last)
     if (!isLast) {
       const moveDownAction = new vscode.CodeAction(
-        `Move ${symbol.name} down (Go Helper)`,
+        `Move ${symbol.name} down (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveDownAction.command = {
-        command: "go-helper.moveSymbolDown",
+        command: "go-assistant.moveSymbolDown",
         title: "Move Symbol Down",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2326,7 +2326,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Rename
     const renameAction = new vscode.CodeAction(
-      `Rename ${symbol.name} (Go Helper)`,
+      `Rename ${symbol.name} (Go Assistant)`,
       vscode.CodeActionKind.Refactor,
     );
     renameAction.command = {
@@ -2362,11 +2362,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move up (only if not first)
     if (!isFirst) {
       const moveUpAction = new vscode.CodeAction(
-        `Move ${symbolKeyword} ${symbol.name} up (Go Helper)`,
+        `Move ${symbolKeyword} ${symbol.name} up (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveUpAction.command = {
-        command: "go-helper.moveSymbolUp",
+        command: "go-assistant.moveSymbolUp",
         title: "Move Symbol Up",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2376,11 +2376,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Move down (only if not last)
     if (!isLast) {
       const moveDownAction = new vscode.CodeAction(
-        `Move ${symbolKeyword} ${symbol.name} down (Go Helper)`,
+        `Move ${symbolKeyword} ${symbol.name} down (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       moveDownAction.command = {
-        command: "go-helper.moveSymbolDown",
+        command: "go-assistant.moveSymbolDown",
         title: "Move Symbol Down",
         arguments: [document.uri, symbol, allSymbols],
       };
@@ -2389,7 +2389,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Rename
     const renameAction = new vscode.CodeAction(
-      `Rename ${symbolKeyword} ${symbol.name} (Go Helper)`,
+      `Rename ${symbolKeyword} ${symbol.name} (Go Assistant)`,
       vscode.CodeActionKind.Refactor,
     );
     renameAction.command = {
@@ -2405,11 +2405,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     if (!hasExplicitType) {
       const addTypeAction = new vscode.CodeAction(
-        `Add ${symbolKeyword} type (Go Helper)`,
+        `Add ${symbolKeyword} type (Go Assistant)`,
         vscode.CodeActionKind.Refactor,
       );
       addTypeAction.command = {
-        command: "go-helper.addVarType",
+        command: "go-assistant.addVarType",
         title: "Add Variable Type",
         arguments: [document.uri, symbol],
       };

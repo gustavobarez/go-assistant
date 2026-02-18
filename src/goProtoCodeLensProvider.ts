@@ -167,7 +167,7 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
         );
       }
 
-      // Go references via go-helper panel
+      // Go references via go-assistant panel
       if (goLocation) {
         const refs = await this.findMessageReferences(
           generatedFile,
@@ -177,7 +177,7 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
           lenses.push(
             new vscode.CodeLens(range, {
               title: `${refs.length} ${refs.length === 1 ? "referência" : "referências"}`,
-              command: "go-helper.showReferences",
+              command: "go-assistant.showReferences",
               arguments: [
                 goLocation.uri,
                 goLocation.range.start,
@@ -300,7 +300,7 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
                 serverImpls.length === 1
                   ? `→ Server`
                   : `${serverImpls.length} servidores`,
-              command: "go-helper.showReferences",
+              command: "go-assistant.showReferences",
               arguments: [
                 serverInterface.uri,
                 serverInterface.range.start,
@@ -321,7 +321,7 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
               clientUsages.length === 1
                 ? `→ Client`
                 : `${clientUsages.length} clients`,
-            command: "go-helper.showReferences",
+            command: "go-assistant.showReferences",
             arguments: [
               clientUsages[0].uri,
               clientUsages[0].range.start,

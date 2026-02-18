@@ -1,7 +1,17 @@
 {
-  "name": "go-helper",
-  "displayName": "Go Helper",
-  "description": "Extensão VS Code para Golang que mostra referências e métodos de structs, interfaces e funções",
+  "name": "go-assistant",
+  "displayName": "Go Assistant",
+  "description": "VS Code extension for Go that displays references and methods for structs, interfaces, and functions.",
+  "icon": "icon.png",
+  "publisher": "gustavobarez",
+  "author": {
+    "name": "Gustavo Barez"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gustavobarez/go-assistant"
+  },
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.109.0"
@@ -16,112 +26,112 @@
   "contributes": {
     "commands": [
       {
-        "command": "go-helper.showReferences",
-        "title": "Go Helper: Show References"
+        "command": "go-assistant.showReferences",
+        "title": "Go Assistant: Show References"
       },
       {
-        "command": "go-helper.showImplementations",
-        "title": "Go Helper: Show Implementations"
+        "command": "go-assistant.showImplementations",
+        "title": "Go Assistant: Show Implementations"
       },
       {
-        "command": "go-helper.showImplementers",
-        "title": "Go Helper: Show Implementers"
+        "command": "go-assistant.showImplementers",
+        "title": "Go Assistant: Show Implementers"
       },
       {
-        "command": "go-helper.addImport",
-        "title": "Go Helper: Add Import"
+        "command": "go-assistant.addImport",
+        "title": "Go Assistant: Add Import"
       },
       {
-        "command": "go-helper.clearReferencesView",
+        "command": "go-assistant.clearReferencesView",
         "title": "Clear",
         "icon": "$(clear-all)"
       },
       {
-        "command": "go-helper.refreshReferencesView",
+        "command": "go-assistant.refreshReferencesView",
         "title": "Refresh",
         "icon": "$(refresh)"
       },
       {
-        "command": "go-helper.discoverTests",
+        "command": "go-assistant.discoverTests",
         "title": "Discover Tests",
         "icon": "$(refresh)"
       },
       {
-        "command": "go-helper.runAllTests",
+        "command": "go-assistant.runAllTests",
         "title": "Run All Tests",
         "icon": "$(run-all)"
       },
       {
-        "command": "go-helper.runAllTestsWithCoverage",
+        "command": "go-assistant.runAllTestsWithCoverage",
         "title": "Run All Tests with Shared Coverage",
         "icon": "$(run-all)"
       },
       {
-        "command": "go-helper.runPackageTests",
+        "command": "go-assistant.runPackageTests",
         "title": "Run Package Tests",
         "icon": "$(run)"
       },
       {
-        "command": "go-helper.runFileTests",
+        "command": "go-assistant.runFileTests",
         "title": "Run File Tests",
         "icon": "$(run)"
       },
       {
-        "command": "go-helper.runTest",
+        "command": "go-assistant.runTest",
         "title": "Run Test",
         "icon": "$(run)"
       },
       {
-        "command": "go-helper.debugPackageTests",
+        "command": "go-assistant.debugPackageTests",
         "title": "Debug Package Tests",
         "icon": "$(debug)"
       },
       {
-        "command": "go-helper.debugFileTests",
+        "command": "go-assistant.debugFileTests",
         "title": "Debug File Tests",
         "icon": "$(debug)"
       },
       {
-        "command": "go-helper.debugTest",
+        "command": "go-assistant.debugTest",
         "title": "Debug Test",
         "icon": "$(debug)"
       },
       {
-        "command": "go-helper.openCoverageHtml",
+        "command": "go-assistant.openCoverageHtml",
         "title": "Open Coverage HTML",
         "icon": "$(open-preview)"
       },
       {
-        "command": "go-helper.clearCoverage",
+        "command": "go-assistant.clearCoverage",
         "title": "Clear Coverage Decorations",
         "icon": "$(clear-all)"
       }
     ],
     "views": {
-      "go-helper-references": [
+      "go-assistant-references": [
         {
-          "id": "goHelperReferences",
-          "name": "References (Go Helper)",
-          "when": "goHelper.hasReferences"
+          "id": "goAssistantReferences",
+          "name": "References (Go Assistant)",
+          "when": "goAssistant.hasReferences"
         }
       ],
-      "go-helper-tests": [
+      "go-assistant-tests": [
         {
-          "id": "goHelperTests",
-          "name": "Tests (Go Helper)"
+          "id": "goAssistantTests",
+          "name": "Tests (Go Assistant)"
         }
       ]
     },
     "viewsContainers": {
       "panel": [
         {
-          "id": "go-helper-references",
-          "title": "References (Go Helper)",
+          "id": "go-assistant-references",
+          "title": "References (Go Assistant)",
           "icon": "$(references)"
         },
         {
-          "id": "go-helper-tests",
-          "title": "Tests (Go Helper)",
+          "id": "go-assistant-tests",
+          "title": "Tests (Go Assistant)",
           "icon": "$(beaker)"
         }
       ]
@@ -129,217 +139,205 @@
     "menus": {
       "view/title": [
         {
-          "command": "go-helper.refreshReferencesView",
-          "when": "view == goHelperReferences",
+          "command": "go-assistant.refreshReferencesView",
+          "when": "view == goAssistantReferences",
           "group": "navigation"
         },
         {
-          "command": "go-helper.clearReferencesView",
-          "when": "view == goHelperReferences",
-          "group": "navigation"
-        }
-      ],
-      "view/title": [
-        {
-          "command": "go-helper.discoverTests",
-          "when": "view == goHelperTests",
+          "command": "go-assistant.clearReferencesView",
+          "when": "view == goAssistantReferences",
           "group": "navigation"
         },
         {
-          "submenu": "go-helper.testsMenu",
-          "when": "view == goHelperTests",
+          "command": "go-assistant.discoverTests",
+          "when": "view == goAssistantTests",
+          "group": "navigation"
+        },
+        {
+          "submenu": "go-assistant.testsMenu",
+          "when": "view == goAssistantTests",
           "group": "navigation@1"
-        }
-      ],
-      "go-helper.testsMenu": [
-        {
-          "command": "go-helper.runAllTests",
-          "group": "1_run"
-        },
-        {
-          "command": "go-helper.runAllTestsWithCoverage",
-          "group": "1_run"
         }
       ],
       "view/item/context": [
         {
-          "command": "go-helper.runPackageTests",
-          "when": "view == goHelperTests && viewItem == package",
+          "command": "go-assistant.runPackageTests",
+          "when": "view == goAssistantTests && viewItem == package",
           "group": "inline@1"
         },
         {
-          "command": "go-helper.debugPackageTests",
-          "when": "view == goHelperTests && viewItem == package",
+          "command": "go-assistant.debugPackageTests",
+          "when": "view == goAssistantTests && viewItem == package",
           "group": "inline@2"
         },
         {
-          "command": "go-helper.runFileTests",
-          "when": "view == goHelperTests && viewItem == file",
+          "command": "go-assistant.runFileTests",
+          "when": "view == goAssistantTests && viewItem == file",
           "group": "inline@1"
         },
         {
-          "command": "go-helper.debugFileTests",
-          "when": "view == goHelperTests && viewItem == file",
+          "command": "go-assistant.debugFileTests",
+          "when": "view == goAssistantTests && viewItem == file",
           "group": "inline@2"
         },
         {
-          "command": "go-helper.runTest",
-          "when": "view == goHelperTests && viewItem == test",
+          "command": "go-assistant.runTest",
+          "when": "view == goAssistantTests && viewItem == test",
           "group": "inline@1"
         },
         {
-          "command": "go-helper.debugTest",
-          "when": "view == goHelperTests && viewItem == test",
+          "command": "go-assistant.debugTest",
+          "when": "view == goAssistantTests && viewItem == test",
           "group": "inline@2"
         }
       ]
     },
     "submenus": [
       {
-        "id": "go-helper.testsMenu",
+        "id": "go-assistant.testsMenu",
         "label": "Run All Tests",
         "icon": "$(run-all)"
       }
     ],
     "configuration": {
-      "title": "Go Helper",
+      "title": "Go Assistant",
       "properties": {
-        "goHelper.codelens.enable": {
+        "goAssistant.codelens.enable": {
           "type": "boolean",
           "default": true,
           "description": "Habilita/desabilita todos os CodeLens"
         },
-        "goHelper.codelens.references": {
+        "goAssistant.codelens.references": {
           "type": "boolean",
           "default": true,
           "description": "Mostra contagem de referências para funções, métodos, structs e interfaces"
         },
-        "goHelper.codelens.methods": {
+        "goAssistant.codelens.methods": {
           "type": "boolean",
           "default": true,
           "description": "Mostra contagem de métodos para structs"
         },
-        "goHelper.codelens.implementers": {
+        "goAssistant.codelens.implementers": {
           "type": "boolean",
           "default": true,
           "description": "Mostra contagem de implementadores para interfaces"
         },
-        "goHelper.codelens.implementations": {
+        "goAssistant.codelens.implementations": {
           "type": "boolean",
           "default": true,
           "description": "Mostra contagem de interfaces implementadas por tipos"
         },
-        "goHelper.codelens.fields": {
+        "goAssistant.codelens.fields": {
           "type": "boolean",
           "default": false,
           "description": "Mostra contagem de referências para campos de structs (pode deixar lento em projetos grandes)"
         },
-        "goHelper.codelens.packageImports": {
+        "goAssistant.codelens.packageImports": {
           "type": "boolean",
           "default": true,
           "description": "Mostra quantos arquivos importam este pacote"
         },
-        "goHelper.codelens.largeProject": {
+        "goAssistant.codelens.largeProject": {
           "type": "boolean",
           "default": false,
           "description": "Habilita otimizações para projetos grandes (pode consumir mais RAM e deixar startup mais lento, mas melhora performance de referências)"
         },
-        "goHelper.codelens.runDebug": {
+        "goAssistant.codelens.runDebug": {
           "type": "boolean",
           "default": true,
           "description": "Mostra botões Run/Debug para pacotes main"
         },
-        "goHelper.codelens.debugTests": {
+        "goAssistant.codelens.debugTests": {
           "type": "boolean",
           "default": true,
           "description": "Mostra botões Run/Debug para table-driven tests"
         },
-        "goHelper.inlayHints.enable": {
+        "goAssistant.inlayHints.enable": {
           "type": "boolean",
           "default": false,
           "description": "Mostra contagem de referências como inlay hints inline"
         },
-        "goHelper.inlayHints.buildTags": {
+        "goAssistant.inlayHints.buildTags": {
           "type": "boolean",
           "default": true,
           "description": "Mostra diagnóstico de build tags (se o arquivo será compilado)"
         },
-        "goHelper.postfixCompletion.enable": {
+        "goAssistant.postfixCompletion.enable": {
           "type": "boolean",
           "default": true,
           "description": "Habilita postfix completions (.if, .for, .print, etc.)"
         },
-        "goHelper.codeActions.enable": {
+        "goAssistant.codeActions.enable": {
           "type": "boolean",
           "default": true,
           "description": "Habilita code actions (refatorações rápidas)"
         },
-        "goHelper.codeActions.handleError": {
+        "goAssistant.codeActions.handleError": {
           "type": "boolean",
           "default": true,
           "description": "Mostra ações rápidas para tratar erros"
         },
-        "goHelper.codeActions.extractVariable": {
+        "goAssistant.codeActions.extractVariable": {
           "type": "boolean",
           "default": true,
           "description": "Mostra ação de extrair variável"
         },
-        "goHelper.codeActions.showReferences": {
+        "goAssistant.codeActions.showReferences": {
           "type": "boolean",
           "default": true,
           "description": "Mostra ação de visualizar referências"
         },
-        "goHelper.codeActions.showImplementations": {
+        "goAssistant.codeActions.showImplementations": {
           "type": "boolean",
           "default": true,
           "description": "Mostra ações de visualizar implementações/implementadores"
         },
-        "goHelper.inspections.enable": {
+        "goAssistant.inspections.enable": {
           "type": "boolean",
           "default": true,
           "description": "Habilita inspeções/diagnósticos de código"
         },
-        "goHelper.inspections.unusedAssignments": {
+        "goAssistant.inspections.unusedAssignments": {
           "type": "boolean",
           "default": true,
           "description": "Detecta atribuições não utilizadas"
         },
-        "goHelper.inspections.unusedSymbols": {
+        "goAssistant.inspections.unusedSymbols": {
           "type": "boolean",
           "default": false,
           "description": "Detecta símbolos não utilizados (desabilitado por padrão, gopls já faz isso)"
         },
-        "goHelper.inspections.unreachableCode": {
+        "goAssistant.inspections.unreachableCode": {
           "type": "boolean",
           "default": true,
           "description": "Detecta código inacessível após return/panic"
         },
-        "goHelper.inspections.unhandledErrors": {
+        "goAssistant.inspections.unhandledErrors": {
           "type": "boolean",
           "default": true,
           "description": "Detecta erros não tratados"
         },
-        "goHelper.inspections.shadowedVariables": {
+        "goAssistant.inspections.shadowedVariables": {
           "type": "boolean",
           "default": true,
           "description": "Detecta variáveis sombreadas"
         },
-        "goHelper.inspections.deprecatedSymbols": {
+        "goAssistant.inspections.deprecatedSymbols": {
           "type": "boolean",
           "default": false,
           "description": "Detecta símbolos deprecados (apenas se vscode-go não estiver instalado)"
         },
-        "goHelper.debugging.inlineValues": {
+        "goAssistant.debugging.inlineValues": {
           "type": "boolean",
           "default": true,
           "description": "Mostra valores inline durante debugging"
         },
-        "goHelper.helpers.autoUpdateImports": {
+        "goAssistant.helpers.autoUpdateImports": {
           "type": "boolean",
           "default": true,
           "description": "Atualiza automaticamente imports quando arquivos são movidos"
         },
-        "goHelper.helpers.autoUpdateReferences": {
+        "goAssistant.helpers.autoUpdateReferences": {
           "type": "boolean",
           "default": true,
           "description": "Atualiza automaticamente referências quando arquivos são movidos"

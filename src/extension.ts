@@ -70,11 +70,11 @@ async function getSymbolAtPosition(
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-  console.log("Go Helper extension is now active!");
+  console.log("Go Assistant extension is now active!");
 
   // Initialize References View Provider
   const referencesViewProvider = new GoReferencesViewProvider();
-  const referencesView = vscode.window.createTreeView("goHelperReferences", {
+  const referencesView = vscode.window.createTreeView("goAssistantReferences", {
     treeDataProvider: referencesViewProvider,
     showCollapseAll: true,
   });
@@ -82,11 +82,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(referencesView);
 
   // Set context when view has references
-  vscode.commands.executeCommand("setContext", "goHelper.hasReferences", false);
+  vscode.commands.executeCommand("setContext", "goAssistant.hasReferences", false);
 
   // Initialize Tests View Provider
   const testsViewProvider = new GoTestsViewProvider();
-  const testsView = vscode.window.createTreeView("goHelperTests", {
+  const testsView = vscode.window.createTreeView("goAssistantTests", {
     treeDataProvider: testsViewProvider,
     showCollapseAll: true,
   });
@@ -124,7 +124,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Set context when view has references
-  vscode.commands.executeCommand("setContext", "goHelper.hasReferences", false);
+  vscode.commands.executeCommand("setContext", "goAssistant.hasReferences", false);
 
   // Initialize CodeLens provider for Go files
   const codeLensProvider = new GoCodeLensProvider();
@@ -181,7 +181,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to show references
   const showReferencesCommand = vscode.commands.registerCommand(
-    "go-helper.showReferences",
+    "go-assistant.showReferences",
     async (
       uri: vscode.Uri,
       position: vscode.Position,
@@ -203,12 +203,12 @@ export function activate(context: vscode.ExtensionContext) {
         // Set context to show the view
         vscode.commands.executeCommand(
           "setContext",
-          "goHelper.hasReferences",
+          "goAssistant.hasReferences",
           true,
         );
 
         // Reveal the view
-        await vscode.commands.executeCommand("goHelperReferences.focus");
+        await vscode.commands.executeCommand("goAssistantReferences.focus");
 
         // Optionally also show in default view (commented out - remove comment to enable both)
         // await vscode.commands.executeCommand(
@@ -225,7 +225,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to show implementations
   const showImplementationsCommand = vscode.commands.registerCommand(
-    "go-helper.showImplementations",
+    "go-assistant.showImplementations",
     async (uri: vscode.Uri, position: vscode.Position) => {
       try {
         const locations = await vscode.commands.executeCommand<
@@ -243,10 +243,10 @@ export function activate(context: vscode.ExtensionContext) {
           );
           vscode.commands.executeCommand(
             "setContext",
-            "goHelper.hasReferences",
+            "goAssistant.hasReferences",
             true,
           );
-          await vscode.commands.executeCommand("goHelperReferences.focus");
+          await vscode.commands.executeCommand("goAssistantReferences.focus");
         } else {
           vscode.window.showInformationMessage(
             "Nenhuma implementação encontrada",
@@ -262,7 +262,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to show implementers (types that implement an interface)
   const showImplementersCommand = vscode.commands.registerCommand(
-    "go-helper.showImplementers",
+    "go-assistant.showImplementers",
     async (
       uri: vscode.Uri,
       position: vscode.Position,
@@ -282,10 +282,10 @@ export function activate(context: vscode.ExtensionContext) {
         );
         vscode.commands.executeCommand(
           "setContext",
-          "goHelper.hasReferences",
+          "goAssistant.hasReferences",
           true,
         );
-        await vscode.commands.executeCommand("goHelperReferences.focus");
+        await vscode.commands.executeCommand("goAssistantReferences.focus");
       } else {
         // Otherwise, try to find implementations
         try {
@@ -301,10 +301,10 @@ export function activate(context: vscode.ExtensionContext) {
             );
             vscode.commands.executeCommand(
               "setContext",
-              "goHelper.hasReferences",
+              "goAssistant.hasReferences",
               true,
             );
-            await vscode.commands.executeCommand("goHelperReferences.focus");
+            await vscode.commands.executeCommand("goAssistantReferences.focus");
           } else {
             vscode.window.showInformationMessage(
               "Nenhum implementador encontrado",
@@ -321,12 +321,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to clear references view
   const clearReferencesViewCommand = vscode.commands.registerCommand(
-    "go-helper.clearReferencesView",
+    "go-assistant.clearReferencesView",
     () => {
       referencesViewProvider.clear();
       vscode.commands.executeCommand(
         "setContext",
-        "goHelper.hasReferences",
+        "goAssistant.hasReferences",
         false,
       );
     },
@@ -334,7 +334,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to refresh references view
   const refreshReferencesViewCommand = vscode.commands.registerCommand(
-    "go-helper.refreshReferencesView",
+    "go-assistant.refreshReferencesView",
     () => {
       referencesViewProvider.refresh();
     },
@@ -342,7 +342,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to discover tests
   const discoverTestsCommand = vscode.commands.registerCommand(
-    "go-helper.discoverTests",
+    "go-assistant.discoverTests",
     async () => {
       const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
       if (workspacePath) {
@@ -357,7 +357,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to run all tests
   const runAllTestsCommand = vscode.commands.registerCommand(
-    "go-helper.runAllTests",
+    "go-assistant.runAllTests",
     async () => {
       const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
       if (!workspacePath) {
@@ -402,7 +402,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to run all tests with coverage
   const runAllTestsWithCoverageCommand = vscode.commands.registerCommand(
-    "go-helper.runAllTestsWithCoverage",
+    "go-assistant.runAllTestsWithCoverage",
     async () => {
       const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
       if (!workspacePath) {
@@ -449,7 +449,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to run package tests
   const runPackageTestsCommand = vscode.commands.registerCommand(
-    "go-helper.runPackageTests",
+    "go-assistant.runPackageTests",
     async (item: any) => {
       if (!item?.packageInfo) {
         vscode.window.showErrorMessage("Invalid package selection");
@@ -536,7 +536,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to run file tests
   const runFileTestsCommand = vscode.commands.registerCommand(
-    "go-helper.runFileTests",
+    "go-assistant.runFileTests",
     async (item: any) => {
       if (!item?.fileInfo) {
         vscode.window.showErrorMessage("Invalid file selection");
@@ -623,7 +623,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to run single test
   const runTestCommand = vscode.commands.registerCommand(
-    "go-helper.runTest",
+    "go-assistant.runTest",
     async (item: any) => {
       if (!item?.testInfo) {
         vscode.window.showErrorMessage("Invalid test selection");
@@ -691,7 +691,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to debug package tests
   const debugPackageTestsCommand = vscode.commands.registerCommand(
-    "go-helper.debugPackageTests",
+    "go-assistant.debugPackageTests",
     async (item: any) => {
       if (!item?.packageInfo) {
         vscode.window.showErrorMessage("Invalid package selection");
@@ -711,7 +711,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to debug file tests
   const debugFileTestsCommand = vscode.commands.registerCommand(
-    "go-helper.debugFileTests",
+    "go-assistant.debugFileTests",
     async (item: any) => {
       if (!item?.fileInfo) {
         vscode.window.showErrorMessage("Invalid file selection");
@@ -733,7 +733,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to debug single test
   const debugTestCommand = vscode.commands.registerCommand(
-    "go-helper.debugTest",
+    "go-assistant.debugTest",
     async (item: any) => {
       if (!item?.testInfo) {
         vscode.window.showErrorMessage("Invalid test selection");
@@ -755,7 +755,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to open coverage HTML
   const openCoverageHtmlCommand = vscode.commands.registerCommand(
-    "go-helper.openCoverageHtml",
+    "go-assistant.openCoverageHtml",
     async () => {
       const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
       if (!workspacePath) {
@@ -785,7 +785,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to clear coverage decorations
   const clearCoverageCommand = vscode.commands.registerCommand(
-    "go-helper.clearCoverage",
+    "go-assistant.clearCoverage",
     async () => {
       coverageDecorator.clearDecorations();
       vscode.window.showInformationMessage("Coverage decorations cleared");
@@ -794,7 +794,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to add import
   const addImportCommand = vscode.commands.registerCommand(
-    "go-helper.addImport",
+    "go-assistant.addImport",
     async (uri: vscode.Uri, packageName: string) => {
       const document = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(document);
@@ -832,7 +832,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to move declaration within package
   const moveDeclarationWithinPackageCommand = vscode.commands.registerCommand(
-    "go-helper.moveDeclarationWithinPackage",
+    "go-assistant.moveDeclarationWithinPackage",
     async (uri: vscode.Uri, symbol: any) => {
       const document = await vscode.workspace.openTextDocument(uri);
       const symbolRange = new vscode.Range(
@@ -885,7 +885,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to move declaration between packages
   const moveDeclarationBetweenPackagesCommand = vscode.commands.registerCommand(
-    "go-helper.moveDeclarationBetweenPackages",
+    "go-assistant.moveDeclarationBetweenPackages",
     async (uri: vscode.Uri, symbol: any) => {
       const goFiles = await vscode.workspace.findFiles(
         "**/*.go",
@@ -923,7 +923,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register unified move command
   const unifiedMoveCommand = vscode.commands.registerCommand(
-    "go-helper.unifiedMove",
+    "go-assistant.unifiedMove",
     async (
       uri: vscode.Uri,
       symbol: any,
@@ -1136,7 +1136,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to show method interfaces
   const showMethodInterfacesCommand = vscode.commands.registerCommand(
-    "go-helper.showMethodInterfaces",
+    "go-assistant.showMethodInterfaces",
     async (uri: vscode.Uri, symbol: any, interfaces: vscode.Location[]) => {
       if (interfaces && interfaces.length > 0) {
         // Get symbol information at position
@@ -1156,12 +1156,12 @@ export function activate(context: vscode.ExtensionContext) {
         // Set context to show the view
         vscode.commands.executeCommand(
           "setContext",
-          "goHelper.hasReferences",
+          "goAssistant.hasReferences",
           true,
         );
 
         // Reveal the view
-        await vscode.commands.executeCommand("goHelperReferences.focus");
+        await vscode.commands.executeCommand("goAssistantReferences.focus");
       } else {
         vscode.window.showInformationMessage("No interfaces found");
       }
@@ -1170,7 +1170,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to rename parameter (with update in all callers)
   const renameParameterCommand = vscode.commands.registerCommand(
-    "go-helper.renameParameter",
+    "go-assistant.renameParameter",
     async (uri: vscode.Uri, line: number, paramName: string) => {
       const document = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(document);
@@ -1190,7 +1190,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to change signature (old, will be replaced by Code Actions)
   const changeSignatureCommand = vscode.commands.registerCommand(
-    "go-helper.changeSignature",
+    "go-assistant.changeSignature",
     async (uri: vscode.Uri, symbol: any) => {
       const document = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(document);
@@ -1230,7 +1230,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to move struct within package
   const moveStructWithinPackageCommand = vscode.commands.registerCommand(
-    "go-helper.moveStructWithinPackage",
+    "go-assistant.moveStructWithinPackage",
     async (uri: vscode.Uri, symbol: any) => {
       const document = await vscode.workspace.openTextDocument(uri);
       const symbolRange = new vscode.Range(
@@ -1283,7 +1283,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to move struct between packages
   const moveStructBetweenPackagesCommand = vscode.commands.registerCommand(
-    "go-helper.moveStructBetweenPackages",
+    "go-assistant.moveStructBetweenPackages",
     async (uri: vscode.Uri, symbol: any) => {
       const goFiles = await vscode.workspace.findFiles(
         "**/*.go",
@@ -1321,7 +1321,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register command to generate interface stub
   const generateInterfaceStubCommand = vscode.commands.registerCommand(
-    "go-helper.generateInterfaceStub",
+    "go-assistant.generateInterfaceStub",
     async (uri: vscode.Uri, symbol: any) => {
       const document = await vscode.workspace.openTextDocument(uri);
 
@@ -1360,7 +1360,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
 
   // Register command to move symbol up
   const moveSymbolUpCommand = vscode.commands.registerCommand(
-    "go-helper.moveSymbolUp",
+    "go-assistant.moveSymbolUp",
     async (
       uri: vscode.Uri,
       symbol: any,
@@ -1396,7 +1396,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
 
   // Register command to move symbol down
   const moveSymbolDownCommand = vscode.commands.registerCommand(
-    "go-helper.moveSymbolDown",
+    "go-assistant.moveSymbolDown",
     async (
       uri: vscode.Uri,
       symbol: any,
@@ -1432,7 +1432,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
 
   // Register command to add explicit type to var/const
   const addVarTypeCommand = vscode.commands.registerCommand(
-    "go-helper.addVarType",
+    "go-assistant.addVarType",
     async (uri: vscode.Uri, symbol: any) => {
       const document = await vscode.workspace.openTextDocument(uri);
       const editor = await vscode.window.showTextDocument(document);
@@ -1572,7 +1572,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
   // Refresh when configuration changes
   const onDidChangeConfiguration = vscode.workspace.onDidChangeConfiguration(
     (event) => {
-      if (event.affectsConfiguration("goHelper")) {
+      if (event.affectsConfiguration("goAssistant")) {
         codeLensProvider.clearCache();
         codeLensProvider.refresh();
         inlayHintsProvider.refresh();

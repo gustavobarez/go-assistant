@@ -268,7 +268,7 @@ export class GoPostfixCompletionProvider
 
   private getConfig() {
     const config = vscode.workspace.getConfiguration(
-      "goHelper.postfixCompletion",
+      "goAssistant.postfixCompletion",
     );
     return {
       enable: config.get<boolean>("enable", true),

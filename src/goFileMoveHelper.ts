@@ -21,7 +21,7 @@ export class GoFileMoveHelper {
   }
 
   private getConfig() {
-    const config = vscode.workspace.getConfiguration("goHelper.helpers");
+    const config = vscode.workspace.getConfiguration("goAssistant.helpers");
     return {
       autoUpdateImports: config.get<boolean>("autoUpdateImports", true),
       autoUpdateReferences: config.get<boolean>("autoUpdateReferences", true),

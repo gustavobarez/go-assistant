@@ -6,7 +6,7 @@ export class GoInlineValuesProvider implements vscode.InlineValuesProvider {
     viewPort: vscode.Range,
     context: vscode.InlineValueContext,
   ): vscode.ProviderResult<vscode.InlineValue[]> {
-    const config = vscode.workspace.getConfiguration("goHelper.debugging");
+    const config = vscode.workspace.getConfiguration("goAssistant.debugging");
     if (!config.get<boolean>("inlineValues", true)) {
       return [];
     }

@@ -6,7 +6,7 @@ export class GoDiagnosticsProvider {
 
   constructor() {
     this.diagnosticCollection =
-      vscode.languages.createDiagnosticCollection("go-helper");
+      vscode.languages.createDiagnosticCollection("go-assistant");
 
     // Listen to document changes
     this.disposables.push(
@@ -34,7 +34,7 @@ export class GoDiagnosticsProvider {
   }
 
   private getConfig() {
-    const config = vscode.workspace.getConfiguration("goHelper.inspections");
+    const config = vscode.workspace.getConfiguration("goAssistant.inspections");
     return {
       enable: config.get<boolean>("enable", true),
       unusedSymbols: config.get<boolean>("unusedSymbols", false), // Disabled by default (gopls does this)
