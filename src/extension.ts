@@ -67,6 +67,56 @@ async function getSymbolAtPosition(
   return undefined;
 }
 
+/**
+ * Get the complete declaration text including keywords like 'type', 'const', 'var'
+ * This is necessary because gopls symbol ranges don't include these keywords
+ */
+function getCompleteDeclarationText(
+  document: vscode.TextDocument,
+  symbol: vscode.DocumentSymbol,
+): { text: string; startLine: number; endLine: number } {
+  const symbolStartLine = symbol.range.start.line;
+  const symbolEndLine = symbol.range.end.line;
+
+  // Check if there's a keyword (type, const, var) on the line before the symbol
+  let actualStartLine = symbolStartLine;
+
+  if (symbolStartLine > 0) {
+    const prevLine = document.lineAt(symbolStartLine - 1);
+    const prevLineText = prevLine.text.trim();
+
+    // Check if previous line is a keyword declaration
+    if (prevLineText.match(/^(type|const|var)\s*$/)) {
+      actualStartLine = symbolStartLine - 1;
+    }
+  }
+
+  // Also check if the keyword is on the same line but before the symbol start
+  const symbolStartText = document
+    .getText(
+      new vscode.Range(
+        new vscode.Position(symbolStartLine, 0),
+        symbol.range.start,
+      ),
+    )
+    .trim();
+
+  if (symbolStartText.match(/^(type|const|var)$/)) {
+    actualStartLine = symbolStartLine;
+  }
+
+  const range = new vscode.Range(
+    new vscode.Position(actualStartLine, 0),
+    symbol.range.end,
+  );
+
+  return {
+    text: document.getText(range),
+    startLine: actualStartLine,
+    endLine: symbolEndLine,
+  };
+}
+
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -82,7 +132,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(referencesView);
 
   // Set context when view has references
-  vscode.commands.executeCommand("setContext", "goAssistant.hasReferences", false);
+  vscode.commands.executeCommand(
+    "setContext",
+    "goAssistant.hasReferences",
+    false,
+  );
 
   // Initialize Tests View Provider
   const testsViewProvider = new GoTestsViewProvider();
@@ -124,7 +178,11 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Set context when view has references
-  vscode.commands.executeCommand("setContext", "goAssistant.hasReferences", false);
+  vscode.commands.executeCommand(
+    "setContext",
+    "goAssistant.hasReferences",
+    false,
+  );
 
   // Initialize CodeLens provider for Go files
   const codeLensProvider = new GoCodeLensProvider();
@@ -2381,14 +2439,13 @@ async function moveToFile(
   receiverType: string | null,
 ): Promise<void> {
   try {
-    const symbolRange = new vscode.Range(
-      symbol.range.start.line,
-      symbol.range.start.character,
-      symbol.range.end.line,
-      symbol.range.end.character,
+    // Get complete declaration text including 'type', 'const', 'var' keywords
+    const declaration = getCompleteDeclarationText(document, symbol);
+    let textToMove = declaration.text;
+    let deleteRange = new vscode.Range(
+      new vscode.Position(declaration.startLine, 0),
+      symbol.range.end,
     );
-
-    let textToMove = document.getText(symbolRange);
 
     // If this is a method with a receiver, also move the struct
     if (receiverType) {
@@ -2403,13 +2460,20 @@ async function moveToFile(
           vscode.SymbolKind.Struct,
         );
         if (structSymbol) {
-          const structRange = structSymbol.range;
-          const structText = document.getText(structRange);
-          textToMove = structText + "\n\n" + textToMove;
+          const structDeclaration = getCompleteDeclarationText(
+            document,
+            structSymbol,
+          );
+          textToMove = structDeclaration.text + "\n\n" + textToMove;
 
-          // Delete struct too
+          // Delete struct too - expand delete range to include struct
+          const structDeleteRange = new vscode.Range(
+            new vscode.Position(structDeclaration.startLine, 0),
+            structSymbol.range.end,
+          );
+
           const edit = new vscode.WorkspaceEdit();
-          edit.delete(sourceUri, structRange);
+          edit.delete(sourceUri, structDeleteRange);
         }
       }
     }
@@ -2421,7 +2485,7 @@ async function moveToFile(
     const insertPosition = targetDoc.positionAt(targetText.length);
     edit.insert(targetUri, insertPosition, "\n\n" + textToMove);
 
-    edit.delete(sourceUri, symbolRange);
+    edit.delete(sourceUri, deleteRange);
 
     const success = await vscode.workspace.applyEdit(edit);
 
@@ -2471,30 +2535,39 @@ async function moveMultipleToFile(
   targetUri: vscode.Uri,
 ): Promise<void> {
   try {
-    // Original order for the appended text
-    const inOrder = [...symbols].sort(
-      (a, b) => a.range.start.line - b.range.start.line,
+    // Get complete declarations for all symbols
+    const declarations = symbols.map((s) =>
+      getCompleteDeclarationText(document, s),
     );
+
+    // Original order for the appended text
+    const inOrder = declarations.sort((a, b) => a.startLine - b.startLine);
     // Reverse order for deletions so line offsets stay valid
     const inReverse = [...inOrder].reverse();
 
     const targetDoc = await vscode.workspace.openTextDocument(targetUri);
     const insertPosition = targetDoc.positionAt(targetDoc.getText().length);
-    const textToAppend = inOrder
-      .map((s) => document.getText(s.range))
-      .join("\n\n");
+    const textToAppend = inOrder.map((decl) => decl.text).join("\n\n");
 
     const edit = new vscode.WorkspaceEdit();
     edit.insert(targetUri, insertPosition, "\n\n" + textToAppend);
-    for (const sym of inReverse) {
-      edit.delete(sourceUri, sym.range);
+
+    for (const decl of inReverse) {
+      const deleteRange = new vscode.Range(
+        new vscode.Position(decl.startLine, 0),
+        new vscode.Position(
+          decl.endLine,
+          document.lineAt(decl.endLine).text.length,
+        ),
+      );
+      edit.delete(sourceUri, deleteRange);
     }
 
     const success = await vscode.workspace.applyEdit(edit);
     if (success) {
       await vscode.window.showTextDocument(targetUri);
       vscode.window.showInformationMessage(
-        `Moved ${inOrder.map((s) => s.name).join(", ")} to ${vscode.workspace.asRelativePath(targetUri)}`,
+        `Moved ${symbols.map((s) => s.name).join(", ")} to ${vscode.workspace.asRelativePath(targetUri)}`,
       );
     } else {
       vscode.window.showErrorMessage("Failed to move symbols");
@@ -2564,13 +2637,9 @@ async function moveToPackage(uri: vscode.Uri, symbol: any): Promise<void> {
       targetPackageName = path.basename(selected.uri.fsPath);
     }
 
-    const symbolRange = new vscode.Range(
-      symbol.range.start.line,
-      0,
-      symbol.range.end.line,
-      symbol.range.end.character,
-    );
-    const symbolText = sourceDoc.getText(symbolRange);
+    // Get complete declaration text including 'type', 'const', 'var' keywords
+    const declaration = getCompleteDeclarationText(sourceDoc, symbol);
+    const symbolText = declaration.text;
 
     // Pick or create a target .go file
     let targetFileUri: vscode.Uri;
@@ -2639,17 +2708,17 @@ async function moveToPackage(uri: vscode.Uri, symbol: any): Promise<void> {
 
     // Delete from source
     // Include a leading blank line if there is one before the symbol
-    const startLine = symbol.range.start.line;
+    const startLine = declaration.startLine;
     const deleteStart =
       startLine > 0 && sourceDoc.lineAt(startLine - 1).text.trim() === ""
         ? new vscode.Position(startLine - 1, 0)
         : new vscode.Position(startLine, 0);
     const deleteEnd =
-      symbol.range.end.line + 1 < sourceDoc.lineCount
-        ? new vscode.Position(symbol.range.end.line + 1, 0)
+      declaration.endLine + 1 < sourceDoc.lineCount
+        ? new vscode.Position(declaration.endLine + 1, 0)
         : new vscode.Position(
-            symbol.range.end.line,
-            symbol.range.end.character,
+            declaration.endLine,
+            sourceDoc.lineAt(declaration.endLine).text.length,
           );
     edit.delete(uri, new vscode.Range(deleteStart, deleteEnd));
 

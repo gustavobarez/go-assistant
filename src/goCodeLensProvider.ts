@@ -77,12 +77,6 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
     const codeLenses: vscode.CodeLens[] = [];
 
     try {
-      // Run/Debug CodeLens for main packages
-      if (config.runDebug) {
-        const runDebugLenses = await this.createRunDebugLenses(document);
-        codeLenses.push(...runDebugLenses);
-      }
-
       // Debug table-driven tests
       if (config.debugTests) {
         const testLenses = await this.createTableDrivenTestLenses(document);
@@ -868,61 +862,6 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
       );
       return [];
     }
-  }
-
-  private async createRunDebugLenses(
-    document: vscode.TextDocument,
-  ): Promise<vscode.CodeLens[]> {
-    const lenses: vscode.CodeLens[] = [];
-
-    try {
-      const text = document.getText();
-
-      // Check if this is a main package
-      const packageMatch = text.match(/^package\s+main/m);
-      if (!packageMatch) {
-        return lenses;
-      }
-
-      // Find main function
-      const mainFuncMatch = text.match(/func\s+main\s*\(\s*\)/m);
-      if (!mainFuncMatch || mainFuncMatch.index === undefined) {
-        return lenses;
-      }
-
-      const mainFuncLine = document.positionAt(mainFuncMatch.index).line;
-      const range = new vscode.Range(mainFuncLine, 0, mainFuncLine, 0);
-
-      // Run lens
-      const runLens = new vscode.CodeLens(range, {
-        title: "▶ Run",
-        command: "go.run.package",
-        tooltip: "Run this Go program",
-        arguments: [document.uri],
-      });
-      lenses.push(runLens);
-
-      // Debug lens
-      const debugLens = new vscode.CodeLens(range, {
-        title: "▶ Debug",
-        command: "go.debug.startSession",
-        tooltip: "Debug this Go program",
-        arguments: [
-          {
-            name: "Launch Package",
-            type: "go",
-            request: "launch",
-            mode: "auto",
-            program: document.uri.fsPath,
-          },
-        ],
-      });
-      lenses.push(debugLens);
-    } catch (error) {
-      console.error("Error creating run/debug lenses:", error);
-    }
-
-    return lenses;
   }
 
   private async createTableDrivenTestLenses(

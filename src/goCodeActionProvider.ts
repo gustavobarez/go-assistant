@@ -4,7 +4,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [
     vscode.CodeActionKind.QuickFix,
     vscode.CodeActionKind.Refactor,
-    vscode.CodeActionKind.RefactorExtract,
     vscode.CodeActionKind.RefactorInline,
     vscode.CodeActionKind.Source,
     vscode.CodeActionKind.SourceOrganizeImports,
@@ -316,7 +315,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
         // Handle error with return
         const returnAction = new vscode.CodeAction(
           "Handle error: return err",
-          vscode.CodeActionKind.QuickFix,
+          vscode.CodeActionKind.Source,
         );
         returnAction.edit = new vscode.WorkspaceEdit();
         returnAction.edit.insert(
@@ -329,7 +328,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
         // Handle error with wrapped error
         const wrapAction = new vscode.CodeAction(
           "Handle error: return wrapped",
-          vscode.CodeActionKind.QuickFix,
+          vscode.CodeActionKind.Source,
         );
         wrapAction.edit = new vscode.WorkspaceEdit();
         wrapAction.edit.insert(
@@ -342,7 +341,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
         // Handle error with log
         const logAction = new vscode.CodeAction(
           "Handle error: log and return",
-          vscode.CodeActionKind.QuickFix,
+          vscode.CodeActionKind.Source,
         );
         logAction.edit = new vscode.WorkspaceEdit();
         logAction.edit.insert(
@@ -355,7 +354,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
         // For functions without error return, offer simple return
         const simpleReturnAction = new vscode.CodeAction(
           "Handle error: return",
-          vscode.CodeActionKind.QuickFix,
+          vscode.CodeActionKind.Source,
         );
         simpleReturnAction.edit = new vscode.WorkspaceEdit();
         simpleReturnAction.edit.insert(
@@ -369,7 +368,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       // Handle error with panic (always available)
       const panicAction = new vscode.CodeAction(
         "Handle error: panic",
-        vscode.CodeActionKind.QuickFix,
+        vscode.CodeActionKind.Source,
       );
       panicAction.edit = new vscode.WorkspaceEdit();
       panicAction.edit.insert(
@@ -437,8 +436,8 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Extract to variable with :=
     const extractAction = new vscode.CodeAction(
-      "Extract to variable",
-      vscode.CodeActionKind.RefactorExtract,
+      "Extract to variable (Go Assistant)",
+      vscode.CodeActionKind.Refactor,
     );
     extractAction.edit = new vscode.WorkspaceEdit();
 
@@ -584,6 +583,27 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     return undefined;
   }
 
+  private findSymbolByName(
+    symbols: vscode.DocumentSymbol[],
+    name: string,
+    kind?: vscode.SymbolKind,
+  ): vscode.DocumentSymbol | undefined {
+    for (const symbol of symbols) {
+      if (symbol.name === name && (!kind || symbol.kind === kind)) {
+        return symbol;
+      }
+
+      // Check children recursively
+      if (symbol.children && symbol.children.length > 0) {
+        const childSymbol = this.findSymbolByName(symbol.children, name, kind);
+        if (childSymbol) {
+          return childSymbol;
+        }
+      }
+    }
+    return undefined;
+  }
+
   private createVarDeclarationActions(
     document: vscode.TextDocument,
     range: vscode.Range,
@@ -722,7 +742,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
       const rewriteAction = new vscode.CodeAction(
         `Rewrite dot import "${pkgPath}"`,
-        vscode.CodeActionKind.QuickFix,
+        vscode.CodeActionKind.Source,
       );
 
       const startPos = document.positionAt(dotImportMatch.index);
@@ -762,7 +782,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       // Remove all broken imports
       const removeAllBrokenAction = new vscode.CodeAction(
         `Remove ${brokenImports.length} broken import(s)`,
-        vscode.CodeActionKind.QuickFix,
+        vscode.CodeActionKind.Source,
       );
       removeAllBrokenAction.edit = new vscode.WorkspaceEdit();
 
@@ -782,7 +802,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       for (const brokenImport of brokenImports) {
         const removeAction = new vscode.CodeAction(
           `Remove broken import: ${brokenImport.line.trim()}`,
-          vscode.CodeActionKind.QuickFix,
+          vscode.CodeActionKind.Source,
         );
         removeAction.edit = new vscode.WorkspaceEdit();
         removeAction.edit.delete(
@@ -802,7 +822,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       // Remove all unused imports
       const removeAllAction = new vscode.CodeAction(
         `Remove ${unusedImports.length} unused import(s)`,
-        vscode.CodeActionKind.QuickFix,
+        vscode.CodeActionKind.Source,
       );
       removeAllAction.edit = new vscode.WorkspaceEdit();
 
@@ -816,7 +836,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       for (const unusedImport of unusedImports) {
         const removeAction = new vscode.CodeAction(
           `Remove unused import "${unusedImport.path}"`,
-          vscode.CodeActionKind.QuickFix,
+          vscode.CodeActionKind.Source,
         );
         removeAction.edit = new vscode.WorkspaceEdit();
         removeAction.edit.delete(document.uri, unusedImport.range);
@@ -1195,7 +1215,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
       const inlineAction = new vscode.CodeAction(
         `Inline variable '${varName}'`,
-        vscode.CodeActionKind.RefactorInline,
+        vscode.CodeActionKind.Source,
       );
 
       // Find all usages of the variable and replace with value
@@ -1252,7 +1272,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       const fieldType = multiFieldMatch[3];
 
       const splitAction = new vscode.CodeAction(
-        "Split field declarations",
+        "Split field declarations (Go Assistant)",
         vscode.CodeActionKind.Refactor,
       );
 
@@ -1310,6 +1330,131 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
   ): Promise<vscode.CodeAction[]> {
     const actions: vscode.CodeAction[] = [];
     const line = document.lineAt(range.start.line).text;
+
+    // Check if cursor is on struct declaration line
+    const structDeclMatch = line.match(/^\s*type\s+(\w+)\s+struct\s*\{?\s*$/);
+    if (structDeclMatch) {
+      const structName = structDeclMatch[1];
+
+      // Find the struct symbol and its fields
+      try {
+        const symbols = await vscode.commands.executeCommand<
+          vscode.DocumentSymbol[]
+        >("vscode.executeDocumentSymbolProvider", document.uri);
+
+        if (symbols) {
+          const structSymbol = this.findSymbolByName(
+            symbols,
+            structName,
+            vscode.SymbolKind.Struct,
+          );
+
+          if (structSymbol && structSymbol.children) {
+            const fields = structSymbol.children.filter(
+              (c) =>
+                c.kind === vscode.SymbolKind.Field ||
+                c.kind === vscode.SymbolKind.Property,
+            );
+
+            if (fields.length > 0) {
+              // Check if fields already have json tags
+              let hasJsonTags = false;
+              let allHaveJsonTags = true;
+
+              for (const field of fields) {
+                const fieldText = document.getText(field.range);
+                if (fieldText.includes('`json:"')) {
+                  hasJsonTags = true;
+                } else {
+                  allHaveJsonTags = false;
+                }
+              }
+
+              // Add action to add json tags to all fields
+              if (!allHaveJsonTags) {
+                const addAllJsonAction = new vscode.CodeAction(
+                  `Add json tags to all fields (Go Assistant)`,
+                  vscode.CodeActionKind.Refactor,
+                );
+
+                addAllJsonAction.edit = new vscode.WorkspaceEdit();
+
+                for (const field of fields) {
+                  const fieldText = document.getText(field.range);
+                  const fieldLine = document.lineAt(
+                    field.range.start.line,
+                  ).text;
+
+                  // Skip if already has json tag
+                  if (fieldText.includes('`json:"')) {
+                    continue;
+                  }
+
+                  // Extract field name
+                  const fieldMatch = fieldText.match(/^\s*(\w+)\s+/);
+                  if (fieldMatch) {
+                    const fieldName = fieldMatch[1];
+                    const jsonName = fieldName.toLowerCase();
+
+                    const lineRange = document.lineAt(
+                      field.range.start.line,
+                    ).range;
+                    const withTag =
+                      fieldLine.trimEnd() + ` \`json:"${jsonName}"\``;
+                    addAllJsonAction.edit.replace(
+                      document.uri,
+                      lineRange,
+                      withTag,
+                    );
+                  }
+                }
+
+                actions.push(addAllJsonAction);
+              }
+
+              // Add action to remove json tags from all fields
+              if (hasJsonTags) {
+                const removeAllJsonAction = new vscode.CodeAction(
+                  `Remove json tags from all fields (Go Assistant)`,
+                  vscode.CodeActionKind.Refactor,
+                );
+
+                removeAllJsonAction.edit = new vscode.WorkspaceEdit();
+
+                for (const field of fields) {
+                  const fieldText = document.getText(field.range);
+                  const fieldLine = document.lineAt(
+                    field.range.start.line,
+                  ).text;
+
+                  // Skip if doesn't have json tag
+                  if (!fieldText.includes('`json:"')) {
+                    continue;
+                  }
+
+                  const lineRange = document.lineAt(
+                    field.range.start.line,
+                  ).range;
+                  const withoutTags = fieldLine.replace(
+                    /\s*`json:"[^"]*"`/,
+                    "",
+                  );
+                  removeAllJsonAction.edit.replace(
+                    document.uri,
+                    lineRange,
+                    withoutTags.trimEnd(),
+                  );
+                }
+
+                actions.push(removeAllJsonAction);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error creating bulk tag actions:", error);
+      }
+    }
 
     // Add json tag to struct field
     const fieldMatch = line.match(/^\s*(\w+)\s+(\w+)\s*$/);
@@ -1586,8 +1731,8 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
         if (embeddedMatch) {
           const extractAction = new vscode.CodeAction(
-            `Extract embedded type`,
-            vscode.CodeActionKind.RefactorExtract,
+            `Extract embedded type (Go Assistant)`,
+            vscode.CodeActionKind.Refactor,
           );
 
           extractAction.disabled = {
