@@ -38,6 +38,21 @@ function coverageFilePath(cwd: string): string {
 }
 
 /**
+ * Sends a shell command to a terminal, prepending an explicit `cd` so the
+ * working directory is always correct on all platforms (including Windows,
+ * where `createTerminal({ cwd })` may not take effect before the first text
+ * is sent).
+ *
+ * Uses two separate `sendText` calls so the `cd` is isolated on its own line
+ * — this avoids quoting/operator differences between PowerShell, cmd and
+ * Unix shells.
+ */
+function sendCmd(terminal: vscode.Terminal, dir: string, cmd: string): void {
+  terminal.sendText(`cd "${dir}"`);
+  terminal.sendText(cmd);
+}
+
+/**
  * Helper function to get symbol information at a position
  */
 async function getSymbolAtPosition(
@@ -507,7 +522,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(`go test ${extraFlags} ./...`);
+      sendCmd(terminal, workspacePath, `go test ${extraFlags} ./...`);
     },
   );
 
@@ -729,7 +744,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(`go test ${extraFlags} ./...`);
+      sendCmd(terminal, moduleRoot, `go test ${extraFlags} ./...`);
     },
   );
 
@@ -868,7 +883,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(`go test ${extraFlags}`);
+      sendCmd(terminal, packagePath, `go test ${extraFlags}`);
     },
   );
 
@@ -1004,7 +1019,11 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(`go test ${extraFlags} -run "${testPattern}"`);
+      sendCmd(
+        terminal,
+        packagePath,
+        `go test ${extraFlags} -run "${testPattern}"`,
+      );
     },
   );
 
@@ -1116,7 +1135,11 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(`go test ${extraFlags} -run "^${testName}$"`);
+      sendCmd(
+        terminal,
+        packagePath,
+        `go test ${extraFlags} -run "^${testName}$"`,
+      );
     },
   );
 
@@ -1223,7 +1246,11 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(`go test ${extraFlags} -run "^${testName}$"`);
+      sendCmd(
+        terminal,
+        packagePath,
+        `go test ${extraFlags} -run "^${testName}$"`,
+      );
     },
   );
 
@@ -1262,7 +1289,7 @@ export function activate(context: vscode.ExtensionContext) {
         cwd,
       });
       terminal.show();
-      terminal.sendText(cmd);
+      sendCmd(terminal, cwd, cmd);
     },
   );
 
@@ -1306,6 +1333,17 @@ export function activate(context: vscode.ExtensionContext) {
     () => {
       testsViewProvider.clearHistory();
       vscode.window.showInformationMessage("Test history cleared.");
+    },
+  );
+
+  // Register command to reset all test results and coverage decorations
+  const resetTestsCommand = vscode.commands.registerCommand(
+    "go-assistant.resetTests",
+    () => {
+      testsViewProvider.resetResults();
+      testsViewProvider.clearHistory();
+      coverageDecorator.clearDecorations();
+      vscode.window.showInformationMessage("Test results and coverage reset.");
     },
   );
 
@@ -1431,7 +1469,11 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(`go test ${extraFlags} -run "${runPattern}"`);
+      sendCmd(
+        terminal,
+        packagePath,
+        `go test ${extraFlags} -run "${runPattern}"`,
+      );
     },
   );
 
@@ -1469,8 +1511,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const fs = require("fs");
-      const path = require("path");
-      const coverageFile = path.join(workspacePath, "coverage.out");
+      const coverageFile = coverageFilePath(workspacePath);
 
       if (!fs.existsSync(coverageFile)) {
         vscode.window.showErrorMessage(
@@ -1484,7 +1525,7 @@ export function activate(context: vscode.ExtensionContext) {
         cwd: workspacePath,
       });
       terminal.show();
-      terminal.sendText("go tool cover -html=coverage.out");
+      sendCmd(terminal, workspacePath, `go tool cover -html="${coverageFile}"`);
     },
   );
 
@@ -2309,6 +2350,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     rerunLastTestsCommand,
     debugLastTestsCommand,
     clearTestHistoryCommand,
+    resetTestsCommand,
     runModuleTestsCommand,
     runSubTestCommand,
     debugSubTestCommand,

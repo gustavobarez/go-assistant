@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.2",
+  "version": "0.1.3",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -65,6 +65,11 @@
         "command": "go-assistant.clearTestHistory",
         "title": "Clear Test History",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "go-assistant.resetTests",
+        "title": "Reset Results & Coverage",
+        "icon": "$(discard)"
       },
       {
         "command": "go-assistant.runTestFromCode",
@@ -211,6 +216,11 @@
           "command": "go-assistant.configureTestFlags",
           "when": "view == goAssistantTests",
           "group": "navigation@4"
+        },
+        {
+          "command": "go-assistant.resetTests",
+          "when": "view == goAssistantTests",
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [
@@ -245,17 +255,17 @@
           "group": "inline@2"
         },
         {
-          "command": "go-assistant.clearTestHistory",
+          "command": "go-assistant.rerunLastTests",
           "when": "view == goAssistantTests && viewItem == historyRoot",
           "group": "inline@1"
         },
         {
-          "command": "go-assistant.rerunLastTests",
+          "command": "go-assistant.debugLastTests",
           "when": "view == goAssistantTests && viewItem == historyRoot",
           "group": "inline@2"
         },
         {
-          "command": "go-assistant.debugLastTests",
+          "command": "go-assistant.clearTestHistory",
           "when": "view == goAssistantTests && viewItem == historyRoot",
           "group": "inline@3"
         },

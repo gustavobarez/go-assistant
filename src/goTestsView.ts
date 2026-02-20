@@ -1100,6 +1100,30 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     this.refresh();
   }
 
+  /**
+   * Resets every test and sub-test status/duration back to their initial
+   * (not-yet-run) state without re-discovering the tree structure.
+   */
+  resetResults(): void {
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            test.status = undefined;
+            test.duration = undefined;
+            if (test.subTests) {
+              for (const sub of test.subTests) {
+                sub.status = undefined;
+                sub.duration = undefined;
+              }
+            }
+          }
+        }
+      }
+    }
+    this.refresh();
+  }
+
   getRunHistory(): TestRunHistory[] {
     return this.runHistory;
   }
