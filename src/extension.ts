@@ -1,5 +1,4 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
+import * as os from "os";
 import * as vscode from "vscode";
 import { GoCodeActionProvider } from "./goCodeActionProvider";
 import { GoCodeLensProvider } from "./goCodeLensProvider";
@@ -12,7 +11,31 @@ import { findGoModForWorkspace, getGoModuleRoot } from "./goModFinder";
 import { GoPostfixCompletionProvider } from "./goPostfixCompletionProvider";
 import { GoProtoCodeLensProvider } from "./goProtoCodeLensProvider";
 import { GoReferencesViewProvider, SymbolInfo } from "./goReferencesView";
-import { GoTestsViewProvider } from "./goTestsView";
+import {
+  AVAILABLE_TEST_FLAGS,
+  GoTestsViewProvider,
+  TestRunEntry,
+} from "./goTestsView";
+
+/** Parse `--- PASS/FAIL: TestName (0.12s)` → seconds, or undefined. */
+function parseTestDuration(
+  output: string,
+  testName: string,
+): number | undefined {
+  // Escape any regex special chars in the test name
+  const escaped = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = output.match(
+    new RegExp(`--- (?:PASS|FAIL): ${escaped}\\s+\\(([\\d.]+)s\\)`),
+  );
+  return m ? parseFloat(m[1]) : undefined;
+}
+
+/** Returns a stable temp path for a coverage file scoped to a working dir. */
+function coverageFilePath(cwd: string): string {
+  const { createHash } = require("crypto");
+  const hash = createHash("md5").update(cwd).digest("hex").slice(0, 8);
+  return require("path").join(os.tmpdir(), `go-assistant-coverage-${hash}.out`);
+}
 
 /**
  * Helper function to get symbol information at a position
@@ -139,7 +162,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Initialize Tests View Provider
-  const testsViewProvider = new GoTestsViewProvider();
+  const testsViewProvider = new GoTestsViewProvider(context);
   const testsView = vscode.window.createTreeView("goAssistantTests", {
     treeDataProvider: testsViewProvider,
     showCollapseAll: true,
@@ -423,22 +446,52 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
+      testsViewProvider.setLastRunSpec({
+        type: "all",
+        label: "all tests",
+        workspacePath,
+      });
+
       const terminal = vscode.window.createTerminal({
         name: "Go Tests",
         cwd: workspacePath,
       });
       terminal.show();
 
-      // Run tests with coverage
       const { exec } = require("child_process");
-      const path = require("path");
-      const coverageFile = path.join(workspacePath, "coverage.out");
+      const coverageFile = coverageFilePath(workspacePath);
+      const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
 
       exec(
-        "go test -coverprofile=coverage.out ./...",
+        `go test ${extraFlags} ./...`,
         { cwd: workspacePath },
         (error: any, stdout: string, stderr: string) => {
-          // Load and display coverage after tests complete
+          const output = stdout + stderr;
+          // Update all known tests
+          for (const pkg of testsViewProvider.getPackages()) {
+            for (const file of pkg.files) {
+              for (const test of file.tests) {
+                const duration = parseTestDuration(output, test.name);
+                const pass = new RegExp(`--- PASS: ${test.name}`, "m").test(
+                  output,
+                );
+                const fail = new RegExp(`--- FAIL: ${test.name}`, "m").test(
+                  output,
+                );
+                const status = pass ? "pass" : fail ? "fail" : "unknown";
+                testsViewProvider.updateTestStatus(
+                  test.name,
+                  pkg.packagePath,
+                  status,
+                  duration,
+                );
+              }
+            }
+          }
+
+          // Discover subtests from output
+          testsViewProvider.updateSubTestsFromOutput(output);
+
           setTimeout(() => {
             coverageDecorator
               .loadCoverageFromFile(coverageFile)
@@ -454,36 +507,213 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText("go test -coverprofile=coverage.out ./...");
+      terminal.sendText(`go test ${extraFlags} ./...`);
     },
   );
 
-  // Register command to run all tests with coverage
-  const runAllTestsWithCoverageCommand = vscode.commands.registerCommand(
-    "go-assistant.runAllTestsWithCoverage",
+  // Register command to debug all tests
+  const debugAllTestsCommand = vscode.commands.registerCommand(
+    "go-assistant.debugAllTests",
     async () => {
       const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
       if (!workspacePath) {
         vscode.window.showErrorMessage("No workspace folder open");
         return;
       }
+      await vscode.debug.startDebugging(undefined, {
+        type: "go",
+        name: "Debug All Tests",
+        request: "launch",
+        mode: "test",
+        program: `${workspacePath}/...`,
+      });
+    },
+  );
+
+  // Register command to configure test run flags
+  const configureTestFlagsCommand = vscode.commands.registerCommand(
+    "go-assistant.configureTestFlags",
+    async () => {
+      const activeIds = testsViewProvider.getActiveFlagIds();
+      const currentValues = testsViewProvider.getFlagValues();
+
+      type FlagPickItem = vscode.QuickPickItem & { id: string };
+      const picks: FlagPickItem[] = AVAILABLE_TEST_FLAGS.map((f) => ({
+        id: f.id,
+        label: f.label,
+        description:
+          f.description +
+          (currentValues[f.id] ? `  •  "${currentValues[f.id]}"` : ""),
+        picked: activeIds.includes(f.id),
+      }));
+
+      const selected = await vscode.window.showQuickPick(picks, {
+        canPickMany: true,
+        title: "Go Test Flags",
+        placeHolder: "Mark flags to apply to all test runs",
+      });
+
+      if (!selected) return;
+
+      const newValues: Record<string, string> = { ...currentValues };
+
+      for (const f of AVAILABLE_TEST_FLAGS) {
+        if (!f.promptForValue) continue;
+        const isSelected = (selected as FlagPickItem[]).some(
+          (s) => s.id === f.id,
+        );
+        if (isSelected) {
+          const val = await vscode.window.showInputBox({
+            title: f.label,
+            prompt: f.description,
+            placeHolder: f.valuePlaceholder,
+            value: currentValues[f.id] ?? f.defaultValue ?? "",
+          });
+          if (val !== undefined) {
+            newValues[f.id] = val;
+          } else {
+            // User cancelled the input — deselect this flag
+            const idx = (selected as FlagPickItem[]).findIndex(
+              (s) => s.id === f.id,
+            );
+            if (idx !== -1) (selected as FlagPickItem[]).splice(idx, 1);
+          }
+        } else {
+          delete newValues[f.id];
+        }
+      }
+
+      const newIds = (selected as FlagPickItem[]).map((s) => s.id);
+      testsViewProvider.setActiveFlags(newIds, newValues);
+
+      const summary = newIds
+        .map((id) => {
+          const f = AVAILABLE_TEST_FLAGS.find((x) => x.id === id)!;
+          if (f.external) return null;
+          return f.promptForValue && newValues[id]
+            ? `${f.flag}="${newValues[id]}"`
+            : f.flag;
+        })
+        .filter(Boolean)
+        .join(" ");
+
+      vscode.window.showInformationMessage(
+        summary
+          ? `Active test flags: ${summary}`
+          : "No test flags active — using go test defaults",
+      );
+    },
+  );
+
+  // Register command to run all tests in a module (from module tree node)
+  const runModuleTestsCommand = vscode.commands.registerCommand(
+    "go-assistant.runModuleTests",
+    async (item: any) => {
+      if (!item?.moduleInfo) {
+        vscode.window.showErrorMessage("Invalid module selection");
+        return;
+      }
+      const moduleRoot = item.moduleInfo.moduleRoot;
+
+      testsViewProvider.setLastRunSpec({
+        type: "all",
+        label: item.moduleInfo.moduleName,
+        workspacePath: moduleRoot,
+      });
+
+      // Mark all tests in module as running
+      for (const pkg of item.moduleInfo.packages) {
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            testsViewProvider.updateTestStatus(
+              test.name,
+              pkg.packagePath,
+              "running",
+            );
+          }
+        }
+      }
 
       const terminal = vscode.window.createTerminal({
-        name: "Go Tests (Shared Coverage)",
-        cwd: workspacePath,
+        name: `Go Tests - ${item.moduleInfo.moduleName}`,
+        cwd: moduleRoot,
       });
       terminal.show();
 
-      // Run tests with coverage and detailed package info
       const { exec } = require("child_process");
-      const path = require("path");
-      const coverageFile = path.join(workspacePath, "coverage.out");
+      const coverageFile = coverageFilePath(moduleRoot);
+      const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
 
       exec(
-        "go test -coverprofile=coverage.out -coverpkg=./... ./...",
-        { cwd: workspacePath },
+        `go test ${extraFlags} ./...`,
+        { cwd: moduleRoot },
         (error: any, stdout: string, stderr: string) => {
-          // Load and display coverage after tests complete
+          const output = stdout + stderr;
+          const historyEntries: TestRunEntry[] = [];
+
+          for (const pkg of item.moduleInfo.packages) {
+            for (const file of pkg.files) {
+              for (const test of file.tests) {
+                const duration = parseTestDuration(output, test.name);
+                const pass = new RegExp(`--- PASS: ${test.name}`, "m").test(
+                  output,
+                );
+                const fail = new RegExp(`--- FAIL: ${test.name}`, "m").test(
+                  output,
+                );
+                const status = pass ? "pass" : fail ? "fail" : "unknown";
+                testsViewProvider.updateTestStatus(
+                  test.name,
+                  pkg.packagePath,
+                  status,
+                  duration,
+                );
+                historyEntries.push({
+                  testName: test.name,
+                  packagePath: pkg.packagePath,
+                  file: test.file,
+                  status: status === "unknown" ? "unknown" : status,
+                  duration,
+                });
+
+                // Sub-tests
+                if (test.subTests) {
+                  for (const sub of test.subTests) {
+                    const subDuration = parseTestDuration(output, sub.fullName);
+                    const subPass = new RegExp(
+                      `--- PASS: ${sub.fullName.replace(/\//g, "/")}`,
+                      "m",
+                    ).test(output);
+                    const subFail = new RegExp(
+                      `--- FAIL: ${sub.fullName.replace(/\//g, "/")}`,
+                      "m",
+                    ).test(output);
+                    const subStatus = subPass
+                      ? "pass"
+                      : subFail
+                        ? "fail"
+                        : "unknown";
+                    testsViewProvider.updateSubTestStatus(
+                      test.name,
+                      sub.fullName,
+                      pkg.packagePath,
+                      subStatus,
+                      subDuration,
+                    );
+                  }
+                }
+              }
+            }
+          }
+
+          testsViewProvider.addToHistory(
+            item.moduleInfo.moduleName,
+            historyEntries,
+          );
+
+          // Discover subtests from output
+          testsViewProvider.updateSubTestsFromOutput(output);
+
           setTimeout(() => {
             coverageDecorator
               .loadCoverageFromFile(coverageFile)
@@ -491,7 +721,7 @@ export function activate(context: vscode.ExtensionContext) {
                 if (loaded) {
                   coverageDecorator.applyDecorationsToAllEditors();
                   vscode.window.showInformationMessage(
-                    "Coverage applied to all files",
+                    "Coverage applied to editors",
                   );
                 }
               });
@@ -499,9 +729,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(
-        "go test -coverprofile=coverage.out -coverpkg=./... ./...",
-      );
+      terminal.sendText(`go test ${extraFlags} ./...`);
     },
   );
 
@@ -516,6 +744,13 @@ export function activate(context: vscode.ExtensionContext) {
 
       const packagePath = item.packageInfo.packagePath;
 
+      // Track last run spec
+      testsViewProvider.setLastRunSpec({
+        type: "package",
+        label: item.packageInfo.packageName,
+        packagePath,
+      });
+
       // Mark all tests in package as running
       for (const file of item.packageInfo.files) {
         for (const test of file.tests) {
@@ -529,20 +764,20 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      // Run tests with coverage and capture results
       const { exec } = require("child_process");
-      const path = require("path");
-      const coverageFile = path.join(packagePath, "coverage.out");
+      const coverageFile = coverageFilePath(packagePath);
+      const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
 
       exec(
-        "go test -v -coverprofile=coverage.out",
+        `go test ${extraFlags}`,
         { cwd: packagePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
+          const historyEntries: TestRunEntry[] = [];
 
-          // Parse individual test results
           for (const file of item.packageInfo.files) {
             for (const test of file.tests) {
+              const duration = parseTestDuration(output, test.name);
               const passMatch = new RegExp(`--- PASS: ${test.name}`, "m").test(
                 output,
               );
@@ -555,24 +790,69 @@ export function activate(context: vscode.ExtensionContext) {
                   test.name,
                   packagePath,
                   "pass",
+                  duration,
                 );
+                historyEntries.push({
+                  testName: test.name,
+                  packagePath,
+                  file: test.file,
+                  status: "pass",
+                  duration,
+                });
               } else if (failMatch) {
                 testsViewProvider.updateTestStatus(
                   test.name,
                   packagePath,
                   "fail",
+                  duration,
                 );
+                historyEntries.push({
+                  testName: test.name,
+                  packagePath,
+                  file: test.file,
+                  status: "fail",
+                  duration,
+                });
               } else {
                 testsViewProvider.updateTestStatus(
                   test.name,
                   packagePath,
                   "unknown",
                 );
+                historyEntries.push({
+                  testName: test.name,
+                  packagePath,
+                  file: test.file,
+                  status: "unknown",
+                });
+              }
+
+              // Sub-tests
+              if (test.subTests) {
+                for (const sub of test.subTests) {
+                  const subDuration = parseTestDuration(output, sub.fullName);
+                  const subPass = output.includes(`--- PASS: ${sub.fullName}`);
+                  const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
+                  testsViewProvider.updateSubTestStatus(
+                    test.name,
+                    sub.fullName,
+                    packagePath,
+                    subPass ? "pass" : subFail ? "fail" : "unknown",
+                    subDuration,
+                  );
+                }
               }
             }
           }
 
-          // Load and display coverage
+          testsViewProvider.addToHistory(
+            item.packageInfo.packageName,
+            historyEntries,
+          );
+
+          // Discover subtests from output
+          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
+
           setTimeout(() => {
             coverageDecorator
               .loadCoverageFromFile(coverageFile)
@@ -588,7 +868,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText("go test -v -coverprofile=coverage.out");
+      terminal.sendText(`go test ${extraFlags}`);
     },
   );
 
@@ -602,7 +882,17 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const packagePath = item.fileInfo.packagePath;
-      const fileName = require("path").basename(item.fileInfo.file);
+      const path = require("path");
+      const fileName = path.basename(item.fileInfo.file);
+      const testPattern = `^(${item.fileInfo.tests.map((t: any) => t.name).join("|")})$`;
+
+      // Track last run spec
+      testsViewProvider.setLastRunSpec({
+        type: "file",
+        label: fileName,
+        packagePath,
+        testPattern,
+      });
 
       // Mark all tests in file as running
       for (const test of item.fileInfo.tests) {
@@ -615,20 +905,19 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      // Run tests with coverage and capture results
       const { exec } = require("child_process");
-      const path = require("path");
-      const testPattern = `^(${item.fileInfo.tests.map((t: any) => t.name).join("|")})$`;
-      const coverageFile = path.join(packagePath, "coverage.out");
+      const coverageFile = coverageFilePath(packagePath);
+      const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
       exec(
-        `go test -v -coverprofile=coverage.out -run "${testPattern}"`,
+        `go test ${extraFlags} -run "${testPattern}"`,
         { cwd: packagePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
+          const historyEntries: TestRunEntry[] = [];
 
-          // Parse individual test results
           for (const test of item.fileInfo.tests) {
+            const duration = parseTestDuration(output, test.name);
             const passMatch = new RegExp(`--- PASS: ${test.name}`, "m").test(
               output,
             );
@@ -641,23 +930,65 @@ export function activate(context: vscode.ExtensionContext) {
                 test.name,
                 packagePath,
                 "pass",
+                duration,
               );
+              historyEntries.push({
+                testName: test.name,
+                packagePath,
+                file: test.file,
+                status: "pass",
+                duration,
+              });
             } else if (failMatch) {
               testsViewProvider.updateTestStatus(
                 test.name,
                 packagePath,
                 "fail",
+                duration,
               );
+              historyEntries.push({
+                testName: test.name,
+                packagePath,
+                file: test.file,
+                status: "fail",
+                duration,
+              });
             } else {
               testsViewProvider.updateTestStatus(
                 test.name,
                 packagePath,
                 "unknown",
               );
+              historyEntries.push({
+                testName: test.name,
+                packagePath,
+                file: test.file,
+                status: "unknown",
+              });
+            }
+
+            // Sub-tests
+            if (test.subTests) {
+              for (const sub of test.subTests) {
+                const subDuration = parseTestDuration(output, sub.fullName);
+                const subPass = output.includes(`--- PASS: ${sub.fullName}`);
+                const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
+                testsViewProvider.updateSubTestStatus(
+                  test.name,
+                  sub.fullName,
+                  packagePath,
+                  subPass ? "pass" : subFail ? "fail" : "unknown",
+                  subDuration,
+                );
+              }
             }
           }
 
-          // Load and display coverage
+          testsViewProvider.addToHistory(fileName, historyEntries);
+
+          // Discover subtests from output
+          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
+
           setTimeout(() => {
             coverageDecorator
               .loadCoverageFromFile(coverageFile)
@@ -673,9 +1004,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      terminal.sendText(
-        `go test -v -coverprofile=coverage.out -run "${testPattern}"`,
-      );
+      terminal.sendText(`go test ${extraFlags} -run "${testPattern}"`);
     },
   );
 
@@ -690,6 +1019,15 @@ export function activate(context: vscode.ExtensionContext) {
 
       const testName = item.testInfo.name;
       const packagePath = item.testInfo.packagePath;
+      const filePath: string = item.testInfo.file;
+
+      // Track last run spec
+      testsViewProvider.setLastRunSpec({
+        type: "test",
+        label: testName,
+        packagePath,
+        testPattern: `^${testName}$`,
+      });
 
       // Mark test as running
       testsViewProvider.updateTestStatus(testName, packagePath, "running");
@@ -700,31 +1038,69 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      // Run test with coverage and capture result
       const { exec } = require("child_process");
       const path = require("path");
-      const coverageFile = path.join(packagePath, "coverage.out");
+      const coverageFile = coverageFilePath(packagePath);
+      const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
       exec(
-        `go test -v -coverprofile=coverage.out -run "^${testName}$"`,
+        `go test ${extraFlags} -run "^${testName}$"`,
         { cwd: packagePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
+          const duration = parseTestDuration(output, testName);
 
-          // Determine test result
+          let status: "pass" | "fail" | "unknown";
           if (error) {
-            testsViewProvider.updateTestStatus(testName, packagePath, "fail");
+            status = "fail";
           } else if (output.includes("PASS") || output.includes("ok\t")) {
-            testsViewProvider.updateTestStatus(testName, packagePath, "pass");
+            status = "pass";
           } else {
-            testsViewProvider.updateTestStatus(
-              testName,
-              packagePath,
-              "unknown",
-            );
+            status = "unknown";
           }
 
-          // Load and display coverage
+          testsViewProvider.updateTestStatus(
+            testName,
+            packagePath,
+            status,
+            duration,
+          );
+          testsViewProvider.addToHistory(testName, [
+            {
+              testName,
+              packagePath,
+              file: filePath,
+              status: status === "unknown" ? "unknown" : status,
+              duration,
+            },
+          ]);
+
+          // Sub-tests
+          const allPkgs = testsViewProvider.getPackages();
+          const pkg = allPkgs.find((p) => p.packagePath === packagePath);
+          if (pkg) {
+            for (const f of pkg.files) {
+              const t = f.tests.find((t) => t.name === testName);
+              if (t?.subTests) {
+                for (const sub of t.subTests) {
+                  const subDuration = parseTestDuration(output, sub.fullName);
+                  const subPass = output.includes(`--- PASS: ${sub.fullName}`);
+                  const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
+                  testsViewProvider.updateSubTestStatus(
+                    testName,
+                    sub.fullName,
+                    packagePath,
+                    subPass ? "pass" : subFail ? "fail" : "unknown",
+                    subDuration,
+                  );
+                }
+              }
+            }
+          }
+
+          // Discover any new subtests from output
+          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
+
           setTimeout(() => {
             coverageDecorator
               .loadCoverageFromFile(coverageFile)
@@ -740,10 +1116,196 @@ export function activate(context: vscode.ExtensionContext) {
         },
       );
 
-      // Send command to terminal for display
-      terminal.sendText(
-        `go test -v -coverprofile=coverage.out -run "^${testName}$"`,
+      terminal.sendText(`go test ${extraFlags} -run "^${testName}$"`);
+    },
+  );
+
+  // Register command to run test from code (CodeLens) – updates the tests tab
+  const runTestFromCodeCommand = vscode.commands.registerCommand(
+    "go-assistant.runTestFromCode",
+    async (args: { testName: string; filePath: string }) => {
+      if (!args?.testName || !args?.filePath) {
+        vscode.window.showErrorMessage("Invalid test arguments");
+        return;
+      }
+
+      const path = require("path");
+      const testName = args.testName;
+      const packagePath = path.dirname(args.filePath);
+
+      // Track last run spec
+      testsViewProvider.setLastRunSpec({
+        type: "test",
+        label: testName,
+        packagePath,
+        testPattern: `^${testName}$`,
+      });
+
+      testsViewProvider.updateTestStatus(testName, packagePath, "running");
+
+      const terminal = vscode.window.createTerminal({
+        name: `Go Test - ${testName}`,
+        cwd: packagePath,
+      });
+      terminal.show();
+
+      const { exec } = require("child_process");
+      const coverageFile = coverageFilePath(packagePath);
+      const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
+
+      exec(
+        `go test ${extraFlags} -run "^${testName}$"`,
+        { cwd: packagePath },
+        (error: any, stdout: string, stderr: string) => {
+          const output = stdout + stderr;
+          const duration = parseTestDuration(output, testName);
+
+          let status: "pass" | "fail" | "unknown";
+          if (error) {
+            status = "fail";
+          } else if (output.includes("PASS") || output.includes("ok\t")) {
+            status = "pass";
+          } else {
+            status = "unknown";
+          }
+
+          testsViewProvider.updateTestStatus(
+            testName,
+            packagePath,
+            status,
+            duration,
+          );
+          testsViewProvider.addToHistory(testName, [
+            {
+              testName,
+              packagePath,
+              file: args.filePath,
+              status: status === "unknown" ? "unknown" : status,
+              duration,
+            },
+          ]);
+
+          // Sub-tests
+          const allPkgs = testsViewProvider.getPackages();
+          const pkg = allPkgs.find((p) => p.packagePath === packagePath);
+          if (pkg) {
+            for (const f of pkg.files) {
+              const t = f.tests.find((t) => t.name === testName);
+              if (t?.subTests) {
+                for (const sub of t.subTests) {
+                  const subDuration = parseTestDuration(output, sub.fullName);
+                  const subPass = output.includes(`--- PASS: ${sub.fullName}`);
+                  const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
+                  testsViewProvider.updateSubTestStatus(
+                    testName,
+                    sub.fullName,
+                    packagePath,
+                    subPass ? "pass" : subFail ? "fail" : "unknown",
+                    subDuration,
+                  );
+                }
+              }
+            }
+          }
+
+          // Discover subtests from output
+          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
+
+          setTimeout(() => {
+            coverageDecorator
+              .loadCoverageFromFile(coverageFile)
+              .then((loaded) => {
+                if (loaded) {
+                  coverageDecorator.applyDecorationsToAllEditors();
+                }
+              });
+          }, 500);
+        },
       );
+
+      terminal.sendText(`go test ${extraFlags} -run "^${testName}$"`);
+    },
+  );
+
+  // Register command to rerun last test run
+  const rerunLastTestsCommand = vscode.commands.registerCommand(
+    "go-assistant.rerunLastTests",
+    async () => {
+      const spec = testsViewProvider.getLastRunSpec();
+      if (!spec) {
+        vscode.window.showInformationMessage("No previous test run to rerun.");
+        return;
+      }
+
+      const cwd = spec.packagePath ?? spec.workspacePath ?? "";
+      if (!cwd) {
+        vscode.window.showErrorMessage(
+          "Cannot determine working directory for rerun.",
+        );
+        return;
+      }
+
+      const coverageFile = coverageFilePath(cwd);
+      const extraFlags = testsViewProvider.buildExtraFlags(
+        !!spec.testPattern,
+        coverageFile,
+      );
+      const cmd =
+        spec.type === "all"
+          ? `go test ${extraFlags} ./...`
+          : spec.testPattern
+            ? `go test ${extraFlags} -run "${spec.testPattern}"`
+            : `go test ${extraFlags}`;
+
+      const terminal = vscode.window.createTerminal({
+        name: `Go Rerun - ${spec.label}`,
+        cwd,
+      });
+      terminal.show();
+      terminal.sendText(cmd);
+    },
+  );
+
+  // Register command to debug last test run
+  const debugLastTestsCommand = vscode.commands.registerCommand(
+    "go-assistant.debugLastTests",
+    async () => {
+      const spec = testsViewProvider.getLastRunSpec();
+      if (!spec) {
+        vscode.window.showInformationMessage("No previous test run to debug.");
+        return;
+      }
+
+      const cwd = spec.packagePath ?? spec.workspacePath ?? "";
+      if (!cwd) {
+        vscode.window.showErrorMessage(
+          "Cannot determine working directory for debug.",
+        );
+        return;
+      }
+
+      const debugConfig: vscode.DebugConfiguration = {
+        type: "go",
+        name: `Debug - ${spec.label}`,
+        request: "launch",
+        mode: "test",
+        program: cwd,
+      };
+
+      if (spec.testPattern) {
+        debugConfig.args = ["-test.run", spec.testPattern];
+      }
+
+      await vscode.debug.startDebugging(undefined, debugConfig);
+    },
+  );
+
+  // Register command to clear test run history
+  const clearTestHistoryCommand = vscode.commands.registerCommand(
+    "go-assistant.clearTestHistory",
+    () => {
+      testsViewProvider.clearHistory();
+      vscode.window.showInformationMessage("Test history cleared.");
     },
   );
 
@@ -807,6 +1369,91 @@ export function activate(context: vscode.ExtensionContext) {
         mode: "test",
         program: packagePath,
         args: ["-test.run", `^${testName}$`],
+      });
+    },
+  );
+
+  // Register command to run a single sub-test (t.Run case)
+  const runSubTestCommand = vscode.commands.registerCommand(
+    "go-assistant.runSubTest",
+    async (item: any) => {
+      if (!item?.subTestInfo) {
+        vscode.window.showErrorMessage("Invalid sub-test selection");
+        return;
+      }
+
+      const { parentName, fullName, packagePath, file } = item.subTestInfo;
+      // Convert spaces to underscores as go test does for sub-test names
+      const runPattern = `^${parentName}/${fullName.slice(parentName.length + 1).replace(/ /g, "_")}$`;
+
+      testsViewProvider.updateSubTestStatus(
+        parentName,
+        fullName,
+        packagePath,
+        "running",
+      );
+
+      const terminal = vscode.window.createTerminal({
+        name: `Go SubTest - ${fullName}`,
+        cwd: packagePath,
+      });
+      terminal.show();
+
+      const { exec } = require("child_process");
+      const coverageFile = coverageFilePath(packagePath);
+      const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
+
+      exec(
+        `go test ${extraFlags} -run "${runPattern}"`,
+        { cwd: packagePath },
+        (error: any, stdout: string, stderr: string) => {
+          const output = stdout + stderr;
+          const subDuration = parseTestDuration(output, fullName);
+          const subPass = output.includes(`--- PASS: ${fullName}`);
+          const subFail = output.includes(`--- FAIL: ${fullName}`);
+          testsViewProvider.updateSubTestStatus(
+            parentName,
+            fullName,
+            packagePath,
+            subPass ? "pass" : subFail ? "fail" : "unknown",
+            subDuration,
+          );
+
+          setTimeout(() => {
+            coverageDecorator
+              .loadCoverageFromFile(coverageFile)
+              .then((loaded) => {
+                if (loaded) {
+                  coverageDecorator.applyDecorationsToAllEditors();
+                }
+              });
+          }, 500);
+        },
+      );
+
+      terminal.sendText(`go test ${extraFlags} -run "${runPattern}"`);
+    },
+  );
+
+  // Register command to debug a single sub-test (t.Run case)
+  const debugSubTestCommand = vscode.commands.registerCommand(
+    "go-assistant.debugSubTest",
+    async (item: any) => {
+      if (!item?.subTestInfo) {
+        vscode.window.showErrorMessage("Invalid sub-test selection");
+        return;
+      }
+
+      const { parentName, fullName, packagePath } = item.subTestInfo;
+      const runPattern = `^${parentName}/${fullName.slice(parentName.length + 1).replace(/ /g, "_")}$`;
+
+      await vscode.debug.startDebugging(undefined, {
+        type: "go",
+        name: `Debug SubTest - ${fullName}`,
+        request: "launch",
+        mode: "test",
+        program: packagePath,
+        args: ["-test.run", runPattern],
       });
     },
   );
@@ -1653,10 +2300,18 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     refreshReferencesViewCommand,
     discoverTestsCommand,
     runAllTestsCommand,
-    runAllTestsWithCoverageCommand,
+    debugAllTestsCommand,
+    configureTestFlagsCommand,
     runPackageTestsCommand,
     runFileTestsCommand,
     runTestCommand,
+    runTestFromCodeCommand,
+    rerunLastTestsCommand,
+    debugLastTestsCommand,
+    clearTestHistoryCommand,
+    runModuleTestsCommand,
+    runSubTestCommand,
+    debugSubTestCommand,
     debugPackageTestsCommand,
     debugFileTestsCommand,
     debugTestCommand,

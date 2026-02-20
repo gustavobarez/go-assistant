@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -57,6 +57,20 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "go-assistant.rerunLastTests",
+        "title": "Rerun Last Run",
+        "icon": "$(history)"
+      },
+      {
+        "command": "go-assistant.clearTestHistory",
+        "title": "Clear Test History",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "go-assistant.runTestFromCode",
+        "title": "Run Test (Tab)"
+      },
+      {
         "command": "go-assistant.runAllTests",
         "title": "Run All Tests",
         "icon": "$(run-all)"
@@ -65,6 +79,16 @@
         "command": "go-assistant.runAllTestsWithCoverage",
         "title": "Run All Tests with Shared Coverage",
         "icon": "$(run-all)"
+      },
+      {
+        "command": "go-assistant.debugAllTests",
+        "title": "Debug All Tests",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "go-assistant.configureTestFlags",
+        "title": "Configure Test Flags",
+        "icon": "$(gear)"
       },
       {
         "command": "go-assistant.runPackageTests",
@@ -95,6 +119,26 @@
         "command": "go-assistant.debugTest",
         "title": "Debug Test",
         "icon": "$(debug)"
+      },
+      {
+        "command": "go-assistant.runModuleTests",
+        "title": "Run All Packages",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "go-assistant.runSubTest",
+        "title": "Run Sub-Test",
+        "icon": "$(run)"
+      },
+      {
+        "command": "go-assistant.debugSubTest",
+        "title": "Debug Sub-Test",
+        "icon": "$(debug)"
+      },
+      {
+        "command": "go-assistant.debugLastTests",
+        "title": "Debug Last Run",
+        "icon": "$(debug-alt)"
       },
       {
         "command": "go-assistant.openCoverageHtml",
@@ -149,14 +193,24 @@
           "group": "navigation"
         },
         {
-          "command": "go-assistant.discoverTests",
-          "when": "view == goAssistantTests",
-          "group": "navigation"
-        },
-        {
-          "submenu": "go-assistant.testsMenu",
+          "command": "go-assistant.runAllTests",
           "when": "view == goAssistantTests",
           "group": "navigation@1"
+        },
+        {
+          "command": "go-assistant.debugAllTests",
+          "when": "view == goAssistantTests",
+          "group": "navigation@2"
+        },
+        {
+          "command": "go-assistant.discoverTests",
+          "when": "view == goAssistantTests",
+          "group": "navigation@3"
+        },
+        {
+          "command": "go-assistant.configureTestFlags",
+          "when": "view == goAssistantTests",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -189,16 +243,50 @@
           "command": "go-assistant.debugTest",
           "when": "view == goAssistantTests && viewItem == test",
           "group": "inline@2"
+        },
+        {
+          "command": "go-assistant.clearTestHistory",
+          "when": "view == goAssistantTests && viewItem == historyRoot",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.rerunLastTests",
+          "when": "view == goAssistantTests && viewItem == historyRoot",
+          "group": "inline@2"
+        },
+        {
+          "command": "go-assistant.debugLastTests",
+          "when": "view == goAssistantTests && viewItem == historyRoot",
+          "group": "inline@3"
+        },
+        {
+          "command": "go-assistant.runModuleTests",
+          "when": "view == goAssistantTests && viewItem == module",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.runSubTest",
+          "when": "view == goAssistantTests && viewItem == subtest",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.debugSubTest",
+          "when": "view == goAssistantTests && viewItem == subtest",
+          "group": "inline@2"
+        },
+        {
+          "command": "go-assistant.runTest",
+          "when": "view == goAssistantTests && viewItem == testWithSubs",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.debugTest",
+          "when": "view == goAssistantTests && viewItem == testWithSubs",
+          "group": "inline@2"
         }
       ]
     },
-    "submenus": [
-      {
-        "id": "go-assistant.testsMenu",
-        "label": "Run All Tests",
-        "icon": "$(run-all)"
-      }
-    ],
+    "submenus": [],
     "configuration": {
       "title": "Go Assistant",
       "properties": {

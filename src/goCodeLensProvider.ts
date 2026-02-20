@@ -871,58 +871,41 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
     try {
       const text = document.getText();
+      const filePath = document.uri.fsPath;
 
-      // Find test functions with table-driven pattern
-      // Pattern: func TestXxx(t *testing.T) with tests := []struct or tests := map
-      const testFuncRegex = /func\s+(Test\w+)\s*\(\s*t\s+\*testing\.T\s*\)/g;
+      // Match ALL test functions: TestXxx, BenchmarkXxx, ExampleXxx
+      const testFuncRegex =
+        /func\s+((?:Test|Benchmark|Example)[A-Z]\w*)\s*\(\s*(?:t\s+\*testing\.T|b\s+\*testing\.B|)\s*\)/g;
       let testMatch;
 
       while ((testMatch = testFuncRegex.exec(text)) !== null) {
         const testName = testMatch[1];
         const testStartIndex = testMatch.index;
         const testLine = document.positionAt(testStartIndex).line;
+        const range = new vscode.Range(testLine, 0, testLine, 0);
 
-        // Look for table-driven test pattern in this function
-        // Find the function body (simple heuristic: from 'func' to next 'func' or end)
-        const nextFuncMatch = text
-          .substring(testStartIndex + testMatch[0].length)
-          .match(/\nfunc\s/);
-        const funcEndIndex = nextFuncMatch
-          ? testStartIndex + testMatch[0].length + nextFuncMatch.index!
-          : text.length;
+        // ▶ Run – uses our command so the result is reflected in the Tests tab
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title: "▶ Run",
+            command: "go-assistant.runTestFromCode",
+            tooltip: "Run test and update Tests tab",
+            arguments: [{ testName, filePath }],
+          }),
+        );
 
-        const funcBody = text.substring(testStartIndex, funcEndIndex);
-
-        // Check if it's a table-driven test (contains tests := []struct or for _, tt := range)
-        const isTableDriven =
-          /tests\s*:=\s*\[\]struct/.test(funcBody) ||
-          /for\s*_?,\s*tt\s*:=\s*range\s+tests/.test(funcBody) ||
-          /for\s*_?,\s*tc\s*:=\s*range/.test(funcBody);
-
-        if (isTableDriven) {
-          const range = new vscode.Range(testLine, 0, testLine, 0);
-
-          // Run test
-          const runTestLens = new vscode.CodeLens(range, {
-            title: "▶ Run Test",
-            command: "go.test.cursor",
-            tooltip: "Run this test",
-            arguments: [{ functionName: testName }],
-          });
-          lenses.push(runTestLens);
-
-          // Debug test
-          const debugTestLens = new vscode.CodeLens(range, {
-            title: "▶ Debug Test",
+        // ▶ Debug – keep using go.debug.cursor from the official Go extension
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title: "▶ Debug",
             command: "go.debug.cursor",
             tooltip: "Debug this test",
             arguments: [{ functionName: testName }],
-          });
-          lenses.push(debugTestLens);
-        }
+          }),
+        );
       }
     } catch (error) {
-      console.error("Error creating table-driven test lenses:", error);
+      console.error("Error creating test lenses:", error);
     }
 
     return lenses;
