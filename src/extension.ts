@@ -2323,6 +2323,10 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
         codeLensProvider.refresh();
         inlayHintsProvider.refresh();
       }
+      if (event.affectsConfiguration("goAssistant.coverageDecorator")) {
+        coverageDecorator.refreshDecorationTypes();
+        coverageDecorator.applyDecorationsToAllEditors();
+      }
     },
   );
 

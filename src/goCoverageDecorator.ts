@@ -13,28 +13,63 @@ interface CoverageData {
 }
 
 export class GoCoverageDecorator {
-  private coveredDecorationType: vscode.TextEditorDecorationType;
-  private uncoveredDecorationType: vscode.TextEditorDecorationType;
+  private coveredDecorationType!: vscode.TextEditorDecorationType;
+  private uncoveredDecorationType!: vscode.TextEditorDecorationType;
   private coverageData: Map<string, CoverageData[]> = new Map();
 
   constructor() {
-    // Medium green background for covered lines - using alpha for transparency
+    this.createDecorationTypes();
+  }
+
+  private createDecorationTypes(): void {
+    const config = vscode.workspace.getConfiguration(
+      "goAssistant.coverageDecorator",
+    );
+
+    const coveredHighlight = config.get<string>(
+      "coveredHighlightColor",
+      "rgba(100, 200, 100, 0.30)",
+    );
+    const uncoveredHighlight = config.get<string>(
+      "uncoveredHighlightColor",
+      "rgba(255, 182, 193, 0.25)",
+    );
+    const coveredBorder = config.get<string>(
+      "coveredBorderColor",
+      "rgba(100, 200, 100, 0.8)",
+    );
+    const uncoveredBorder = config.get<string>(
+      "uncoveredBorderColor",
+      "rgba(255, 100, 100, 0.8)",
+    );
+
     this.coveredDecorationType = vscode.window.createTextEditorDecorationType({
-      backgroundColor: "rgba(100, 200, 100, 0.30)", // Medium green with 30% opacity
+      backgroundColor: coveredHighlight,
       isWholeLine: true,
-      overviewRulerColor: "rgba(100, 200, 100, 0.8)",
+      overviewRulerColor: coveredBorder,
       overviewRulerLane: vscode.OverviewRulerLane.Left,
     });
 
-    // Light red/pink background for uncovered lines
     this.uncoveredDecorationType = vscode.window.createTextEditorDecorationType(
       {
-        backgroundColor: "rgba(255, 182, 193, 0.25)", // Light pink with 25% opacity
+        backgroundColor: uncoveredHighlight,
         isWholeLine: true,
-        overviewRulerColor: "rgba(255, 100, 100, 0.8)",
+        overviewRulerColor: uncoveredBorder,
         overviewRulerLane: vscode.OverviewRulerLane.Left,
       },
     );
+  }
+
+  refreshDecorationTypes(): void {
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.languageId === "go") {
+        editor.setDecorations(this.coveredDecorationType, []);
+        editor.setDecorations(this.uncoveredDecorationType, []);
+      }
+    }
+    this.coveredDecorationType.dispose();
+    this.uncoveredDecorationType.dispose();
+    this.createDecorationTypes();
   }
 
   async loadCoverageFromFile(coverageFilePath: string): Promise<boolean> {

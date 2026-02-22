@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.3",
+  "version": "0.1.4",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -439,6 +439,26 @@
           "type": "boolean",
           "default": true,
           "description": "Atualiza automaticamente referências quando arquivos são movidos"
+        },
+        "goAssistant.coverageDecorator.coveredHighlightColor": {
+          "type": "string",
+          "default": "rgba(100, 200, 100, 0.30)",
+          "description": "Cor de fundo para linhas cobertas pelo coverage"
+        },
+        "goAssistant.coverageDecorator.uncoveredHighlightColor": {
+          "type": "string",
+          "default": "rgba(255, 182, 193, 0.25)",
+          "description": "Cor de fundo para linhas não cobertas pelo coverage"
+        },
+        "goAssistant.coverageDecorator.coveredBorderColor": {
+          "type": "string",
+          "default": "rgba(100, 200, 100, 0.8)",
+          "description": "Cor do indicador no overview ruler para linhas cobertas"
+        },
+        "goAssistant.coverageDecorator.uncoveredBorderColor": {
+          "type": "string",
+          "default": "rgba(255, 100, 100, 0.8)",
+          "description": "Cor do indicador no overview ruler para linhas não cobertas"
         }
       }
     }
