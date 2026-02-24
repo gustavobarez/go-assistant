@@ -130,6 +130,15 @@ export const AVAILABLE_TEST_FLAGS: TestFlagOption[] = [
     activeByDefault: false,
   },
   {
+    id: "parallel",
+    flag: "-parallel",
+    label: "Parallel (-parallel)",
+    description: "Maximum number of tests to run in parallel",
+    activeByDefault: false,
+    promptForValue: true,
+    valuePlaceholder: "2-4",
+  },
+  {
     id: "bench",
     flag: "-bench=.",
     label: "Benchmarks (-bench=.)",
@@ -157,10 +166,13 @@ export const AVAILABLE_TEST_FLAGS: TestFlagOption[] = [
   },
   {
     id: "coverpkg",
-    flag: "-coverpkg=./...",
-    label: "Shared Coverage (-coverpkg=./...)",
-    description: "Measure coverage across all packages in the module",
+    flag: "-coverpkg",
+    label: "Coverage Path (-coverpkg)",
+    description:
+      "Measure coverage for a specific set of packages (e.g. ./... for all)",
     activeByDefault: false,
+    promptForValue: true,
+    valuePlaceholder: "./...",
   },
 ];
 

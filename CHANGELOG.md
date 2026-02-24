@@ -2,9 +2,22 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
-## [0.1.5] - 2026-02-24
+## [0.1.6] - 2026-02-25
 
 ### Adicionado
+
+#### 🧪 Testing — Flags
+
+- **Flag `-parallel`**: Nova opção para controlar o número máximo de testes rodando em paralelo. Ao ativar, um input é exibido com placeholder `2-4`
+- **Flag `-coverpkg` customizável**: Renomeada para "Coverage Path (-coverpkg)" — agora permite inserir qualquer padrão de pacote (placeholder `./...`) em vez de ser fixada em `./...`
+
+### Corrigido
+
+#### 🧪 Testing — Flags
+
+- Flags com `promptForValue` (como `-coverpkg`, `-parallel`, `-run`) agora são automaticamente desmarcadas quando o usuário pressiona Enter sem digitar nenhum valor, prevenindo flags ativas sem valor definido
+
+## [0.1.5] - 2026-02-24
 
 #### 🆕 Code Actions
 

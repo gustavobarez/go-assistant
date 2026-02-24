@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.5",
+  "version": "0.1.6",
   "engines": {
     "vscode": "^1.109.0"
   },

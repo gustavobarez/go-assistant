@@ -584,10 +584,10 @@ export function activate(context: vscode.ExtensionContext) {
             placeHolder: f.valuePlaceholder,
             value: currentValues[f.id] ?? f.defaultValue ?? "",
           });
-          if (val !== undefined) {
+          if (val !== undefined && val !== "") {
             newValues[f.id] = val;
           } else {
-            // User cancelled the input — deselect this flag
+            // User cancelled the input or entered empty value — deselect this flag
             const idx = (selected as FlagPickItem[]).findIndex(
               (s) => s.id === f.id,
             );
