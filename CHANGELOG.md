@@ -2,6 +2,35 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.1.5] - 2026-02-24
+
+### Adicionado
+
+#### 🆕 Code Actions
+
+- **Add json tags to all fields**: Nova ação em bulk — adiciona tags `json` a todos os fields de um struct de uma vez, ativável de qualquer linha dentro do struct (não só na linha de declaração)
+- **Add custom tag to all fields**: Pergunta o nome da tag uma vez e aplica em todos os fields do struct simultaneamente
+- **Fill All Fields**: Preenche todos os fields exportados de um struct literal (`&User{}`) com zero values automaticamente
+
+#### 🏷️ Tag Naming (camelCase / snakeCase)
+
+- Tags geradas agora respeitam convenção de nomenclatura configurável via `goAssistant.codeActions.tagNamingCase`
+  - `"camelCase"` (padrão): `UserID` → `userId`, `CreatedAt` → `createdAt`
+  - `"snakeCase"`: `UserID` → `user_id`, `CreatedAt` → `created_at`
+- Tratamento correto de acrônimos: `ID` → `id` (não `iD`), `HTTPSServer` → `httpsServer` / `https_server`
+
+#### 🔌 Protobuf CodeLens
+
+- Busca de arquivos gerados agora funciona mesmo quando `.proto` e `.pb.go` estão em pastas diferentes (busca em todo o workspace)
+- Suporte a ambos os arquivos gerados (`.pb.go` e `_grpc.pb.go`) — interfaces de client/server gRPC agora são encontradas corretamente
+
+### Removido
+
+- **Handle error**: Ação removida completamente (`createHandleErrorActions`)
+- **Proto reference counts**: Contagens de referências/implementações nos CodeLens do `.proto` removidas — gopls não tem consciência de arquivos `.proto`, e a alternativa baseada em busca de texto não era confiável
+
+---
+
 ## [0.1.3] - 2026-02-21
 
 ### Adicionado
@@ -229,16 +258,6 @@ Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 - **Package declaration sync**: Atualiza package quando arquivo muda de pasta
 - **Folder move support**: Suporte para movimento de pastas completas
 - Notificações de progresso durante operações
-
-#### 📊 Estatísticas
-
-- CodeLens: 17/17 implementados (100%)
-- Inlay Hints: 2/2 implementados (100%)
-- Code Actions: 60+ implementados (~80% das funcionalidades da tooltitude)
-- Postfix Completions: 23 implementados (100%)
-- Inspections: 4/7 implementados (57%) - outros delegados ao gopls
-- Debugging: 1/1 implementados (100%)
-- Helpers: 2/2 implementados (100%)
 
 ## [0.0.1] - 2026-02-16
 

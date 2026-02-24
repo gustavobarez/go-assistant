@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.4",
+  "version": "0.1.5",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -154,6 +154,18 @@
         "command": "go-assistant.clearCoverage",
         "title": "Clear Coverage Decorations",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "go-assistant.addCustomTagToField",
+        "title": "Go Assistant: Add Custom Tag to Field"
+      },
+      {
+        "command": "go-assistant.addCustomTagToAllFields",
+        "title": "Go Assistant: Add Custom Tag to All Fields"
+      },
+      {
+        "command": "go-assistant.fillAllFields",
+        "title": "Go Assistant: Fill All Struct Fields"
       }
     ],
     "views": {
@@ -370,10 +382,14 @@
           "default": true,
           "description": "Habilita code actions (refatorações rápidas)"
         },
-        "goAssistant.codeActions.handleError": {
-          "type": "boolean",
-          "default": true,
-          "description": "Mostra ações rápidas para tratar erros"
+        "goAssistant.codeActions.tagNamingCase": {
+          "type": "string",
+          "enum": [
+            "camelCase",
+            "snakeCase"
+          ],
+          "default": "camelCase",
+          "description": "Formato do nome da tag gerada (camelCase: NameOfUser → nameOfUser, snakeCase: NameOfUser → name_of_user)"
         },
         "goAssistant.codeActions.extractVariable": {
           "type": "boolean",

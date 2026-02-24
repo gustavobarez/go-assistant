@@ -13,7 +13,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     const config = vscode.workspace.getConfiguration("goAssistant.codeActions");
     return {
       enable: config.get<boolean>("enable", true),
-      handleError: config.get<boolean>("handleError", true),
       extractVariable: config.get<boolean>("extractVariable", true),
       showReferences: config.get<boolean>("showReferences", true),
       showImplementations: config.get<boolean>("showImplementations", true),
@@ -36,17 +35,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Get selected text or word at cursor
     const selectedText = document.getText(range);
     const wordRange = document.getWordRangeAtPosition(range.start);
-
-    // Handle error actions - check line text if no selection
-    const lineText = document.lineAt(range.start.line).text;
-    if (
-      config.handleError &&
-      (selectedText.includes("err") || lineText.includes("err"))
-    ) {
-      actions.push(
-        ...this.createHandleErrorActions(document, range, selectedText),
-      );
-    }
 
     // Extract variable
     if (config.extractVariable && selectedText && !range.isEmpty) {
@@ -115,6 +103,13 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     // Tag management actions
     const tagActions = await this.createTagManagementActions(document, range);
     actions.push(...tagActions);
+
+    // Fill all struct fields
+    const fillAllFieldsActions = await this.createFillAllFieldsActions(
+      document,
+      range,
+    );
+    actions.push(...fillAllFieldsActions);
 
     // Show type methods
     const typeMethodsActions = await this.createShowTypeMethodsActions(
@@ -267,164 +262,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     }
 
     return actions;
-  }
-
-  private createHandleErrorActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-    text: string,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-
-    // Check if we're on an error assignment (works even if cursor is just on the line)
-    const line = document.lineAt(range.start.line).text;
-    const isErrorAssignment = /\berr\s*:?=/.test(line);
-
-    if (isErrorAssignment) {
-      // Check if error is already handled in the next few lines
-      let alreadyHandled = false;
-      const maxLinesToCheck = 3;
-      for (
-        let i = 1;
-        i <= maxLinesToCheck && range.end.line + i < document.lineCount;
-        i++
-      ) {
-        const nextLine = document.lineAt(range.end.line + i).text;
-        if (/if\s+err\s*!=\s*nil/.test(nextLine)) {
-          alreadyHandled = true;
-          break;
-        }
-      }
-
-      if (alreadyHandled) {
-        return actions;
-      }
-
-      // Check function return type to see if it returns error
-      const functionInfo = this.findEnclosingFunction(
-        document,
-        range.start.line,
-      );
-      const returnsError = functionInfo
-        ? this.functionReturnsError(document, functionInfo)
-        : true;
-      const nextLine = range.end.line + 1;
-
-      // Offer return error if function actually returns error
-      if (returnsError) {
-        // Handle error with return
-        const returnAction = new vscode.CodeAction(
-          "Handle error: return err",
-          vscode.CodeActionKind.Source,
-        );
-        returnAction.edit = new vscode.WorkspaceEdit();
-        returnAction.edit.insert(
-          document.uri,
-          new vscode.Position(nextLine, 0),
-          `\tif err != nil {\n\t\treturn err\n\t}\n`,
-        );
-        actions.push(returnAction);
-
-        // Handle error with wrapped error
-        const wrapAction = new vscode.CodeAction(
-          "Handle error: return wrapped",
-          vscode.CodeActionKind.Source,
-        );
-        wrapAction.edit = new vscode.WorkspaceEdit();
-        wrapAction.edit.insert(
-          document.uri,
-          new vscode.Position(nextLine, 0),
-          `\tif err != nil {\n\t\treturn fmt.Errorf("failed: %w", err)\n\t}\n`,
-        );
-        actions.push(wrapAction);
-
-        // Handle error with log
-        const logAction = new vscode.CodeAction(
-          "Handle error: log and return",
-          vscode.CodeActionKind.Source,
-        );
-        logAction.edit = new vscode.WorkspaceEdit();
-        logAction.edit.insert(
-          document.uri,
-          new vscode.Position(nextLine, 0),
-          `\tif err != nil {\n\t\tlog.Printf("error: %v", err)\n\t\treturn err\n\t}\n`,
-        );
-        actions.push(logAction);
-      } else {
-        // For functions without error return, offer simple return
-        const simpleReturnAction = new vscode.CodeAction(
-          "Handle error: return",
-          vscode.CodeActionKind.Source,
-        );
-        simpleReturnAction.edit = new vscode.WorkspaceEdit();
-        simpleReturnAction.edit.insert(
-          document.uri,
-          new vscode.Position(nextLine, 0),
-          `\tif err != nil {\n\t\treturn\n\t}\n`,
-        );
-        actions.push(simpleReturnAction);
-      }
-
-      // Handle error with panic (always available)
-      const panicAction = new vscode.CodeAction(
-        "Handle error: panic",
-        vscode.CodeActionKind.Source,
-      );
-      panicAction.edit = new vscode.WorkspaceEdit();
-      panicAction.edit.insert(
-        document.uri,
-        new vscode.Position(nextLine, 0),
-        `\tif err != nil {\n\t\tpanic(err)\n\t}\n`,
-      );
-      actions.push(panicAction);
-    }
-
-    return actions;
-  }
-
-  private findEnclosingFunction(
-    document: vscode.TextDocument,
-    lineNumber: number,
-  ): { startLine: number; endLine: number; signature: string } | null {
-    // Look backwards for function declaration
-    for (let i = lineNumber; i >= Math.max(0, lineNumber - 100); i--) {
-      const line = document.lineAt(i).text;
-      if (/^func\s+/.test(line)) {
-        // Find the end of this function
-        let braceCount = 0;
-        let foundStart = false;
-        for (let j = i; j < document.lineCount; j++) {
-          const funcLine = document.lineAt(j).text;
-          for (const char of funcLine) {
-            if (char === "{") {
-              braceCount++;
-              foundStart = true;
-            } else if (char === "}") {
-              braceCount--;
-              if (foundStart && braceCount === 0) {
-                return { startLine: i, endLine: j, signature: line };
-              }
-            }
-          }
-        }
-      }
-    }
-    return null;
-  }
-
-  private functionReturnsError(
-    document: vscode.TextDocument,
-    functionInfo: { startLine: number; endLine: number; signature: string },
-  ): boolean {
-    const signature = functionInfo.signature;
-    // Check if function signature contains 'error' in return types
-    // Examples: func foo() error, func bar() (int, error), func baz() (result Result, err error)
-    const returnMatch = signature.match(/\)\s*(.+?)\s*\{/);
-    if (returnMatch) {
-      const returnPart = returnMatch[1];
-      return /\berror\b/.test(returnPart);
-    }
-    return false;
   }
 
   private createExtractVariableActions(
@@ -1324,19 +1161,69 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     return foundStructStart && braceCount > 0;
   }
 
+  private findEnclosingStructName(
+    document: vscode.TextDocument,
+    lineNumber: number,
+  ): string | undefined {
+    let braceCount = 0;
+    for (let i = lineNumber; i >= 0; i--) {
+      const l = document.lineAt(i).text;
+      // Count braces going backwards (reverse direction)
+      for (let c = l.length - 1; c >= 0; c--) {
+        if (l[c] === "}") braceCount++;
+        else if (l[c] === "{") {
+          if (braceCount > 0) {
+            braceCount--;
+          } else {
+            // This opening brace is the one we're inside
+            const m = l.match(/type\s+(\w+)\s+struct\s*\{/);
+            if (m) return m[1];
+            return undefined;
+          }
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private toTagName(fieldName: string, casing: string): string {
+    // Split PascalCase into words, handling consecutive-uppercase acronyms:
+    //   UserID  -> ["User", "ID"]
+    //   ID      -> ["ID"]
+    //   HTTPSServer -> ["HTTPS", "Server"]
+    const words = fieldName.match(
+      /[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+/g,
+    ) ?? [fieldName];
+    if (casing === "snakeCase") {
+      return words.map((w) => w.toLowerCase()).join("_");
+    }
+    // camelCase: first word fully lowercase, rest keep first letter capitalised
+    return words
+      .map((w, i) =>
+        i === 0
+          ? w.toLowerCase()
+          : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(),
+      )
+      .join("");
+  }
+
   private async createTagManagementActions(
     document: vscode.TextDocument,
     range: vscode.Range,
   ): Promise<vscode.CodeAction[]> {
     const actions: vscode.CodeAction[] = [];
+    const tagCasing = vscode.workspace
+      .getConfiguration("goAssistant.codeActions")
+      .get<string>("tagNamingCase", "camelCase")!;
     const line = document.lineAt(range.start.line).text;
 
-    // Check if cursor is on struct declaration line
+    // Determine the struct name whether cursor is on the declaration line or inside a field
     const structDeclMatch = line.match(/^\s*type\s+(\w+)\s+struct\s*\{?\s*$/);
-    if (structDeclMatch) {
-      const structName = structDeclMatch[1];
+    const structName: string | undefined = structDeclMatch
+      ? structDeclMatch[1]
+      : this.findEnclosingStructName(document, range.start.line);
 
-      // Find the struct symbol and its fields
+    if (structName) {
       try {
         const symbols = await vscode.commands.executeCommand<
           vscode.DocumentSymbol[]
@@ -1357,7 +1244,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
             );
 
             if (fields.length > 0) {
-              // Check if fields already have json tags
               let hasJsonTags = false;
               let allHaveJsonTags = true;
 
@@ -1370,7 +1256,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
                 }
               }
 
-              // Add action to add json tags to all fields
+              // Add json tags to all fields
               if (!allHaveJsonTags) {
                 const addAllJsonAction = new vscode.CodeAction(
                   `Add json tags to all fields (Go Assistant)`,
@@ -1385,17 +1271,14 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
                     field.range.start.line,
                   ).text;
 
-                  // Skip if already has json tag
                   if (fieldText.includes('`json:"')) {
                     continue;
                   }
 
-                  // Extract field name
                   const fieldMatch = fieldText.match(/^\s*(\w+)\s+/);
                   if (fieldMatch) {
                     const fieldName = fieldMatch[1];
-                    const jsonName = fieldName.toLowerCase();
-
+                    const jsonName = this.toTagName(fieldName, tagCasing);
                     const lineRange = document.lineAt(
                       field.range.start.line,
                     ).range;
@@ -1412,7 +1295,19 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
                 actions.push(addAllJsonAction);
               }
 
-              // Add action to remove json tags from all fields
+              // Add custom tag to all fields — asks for tag name once, applies everywhere
+              const addCustomTagAllAction = new vscode.CodeAction(
+                `Add custom tag to all fields (Go Assistant)`,
+                vscode.CodeActionKind.Refactor,
+              );
+              addCustomTagAllAction.command = {
+                command: "go-assistant.addCustomTagToAllFields",
+                title: "Add Custom Tag to All Fields",
+                arguments: [document.uri, range.start.line, structName],
+              };
+              actions.push(addCustomTagAllAction);
+
+              // Remove json tags from all fields
               if (hasJsonTags) {
                 const removeAllJsonAction = new vscode.CodeAction(
                   `Remove json tags from all fields (Go Assistant)`,
@@ -1427,7 +1322,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
                     field.range.start.line,
                   ).text;
 
-                  // Skip if doesn't have json tag
                   if (!fieldText.includes('`json:"')) {
                     continue;
                   }
@@ -1456,11 +1350,11 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       }
     }
 
-    // Add json tag to struct field
+    // Per-field: add json tag (only when on an untagged field line inside a struct)
     const fieldMatch = line.match(/^\s*(\w+)\s+(\w+)\s*$/);
-    if (fieldMatch) {
+    if (fieldMatch && this.isLineInsideStruct(document, range.start.line)) {
       const fieldName = fieldMatch[1];
-      const jsonName = fieldName.toLowerCase();
+      const jsonName = this.toTagName(fieldName, tagCasing);
 
       const addJsonAction = new vscode.CodeAction(
         `Add json tag to '${fieldName}'`,
@@ -1474,7 +1368,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       actions.push(addJsonAction);
     }
 
-    // Remove all tags from field
+    // Per-field: remove all tags
     const taggedFieldMatch = line.match(/^\s*\w+\s+\w+\s+`[^`]+`/);
     if (taggedFieldMatch) {
       const removeTagsAction = new vscode.CodeAction(
@@ -2581,6 +2475,85 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     const possibleType = match[2].trim();
     // Check if there's something between name and =
     return possibleType.length > 0;
+  }
+
+  private async createFillAllFieldsActions(
+    document: vscode.TextDocument,
+    range: vscode.Range,
+  ): Promise<vscode.CodeAction[]> {
+    const actions: vscode.CodeAction[] = [];
+
+    const line = document.lineAt(range.start.line).text;
+
+    // Match struct literal: &TypeName{ or TypeName{ (with optional empty body)
+    const structLiteralMatch = line.match(/(&?)([A-Za-z_]\w*)\s*\{/);
+    if (!structLiteralMatch) {
+      return actions;
+    }
+
+    const typeName = structLiteralMatch[2];
+
+    // Skip Go keywords and built-in identifiers
+    const goKeywords = new Set([
+      "if",
+      "for",
+      "func",
+      "switch",
+      "select",
+      "case",
+      "go",
+      "defer",
+      "return",
+      "var",
+      "const",
+      "type",
+      "import",
+      "package",
+      "struct",
+      "interface",
+      "map",
+      "chan",
+      "range",
+      "break",
+      "continue",
+      "goto",
+      "fallthrough",
+      "else",
+      "default",
+    ]);
+    if (goKeywords.has(typeName)) {
+      return actions;
+    }
+
+    // Only offer for exported types (uppercase) or types that look like structs
+    if (!/^[A-Z]/.test(typeName)) {
+      return actions;
+    }
+
+    // Ensure cursor is within the struct literal span
+    const literalStart = structLiteralMatch.index ?? 0;
+    const closingBrace = line.indexOf("}", literalStart);
+    const literalEnd = closingBrace >= 0 ? closingBrace + 1 : line.length;
+    const cursorCol = range.start.character;
+    if (cursorCol < literalStart || cursorCol > literalEnd) {
+      return actions;
+    }
+
+    // Position of the type name for gopls definition lookup
+    const typeNameCol = line.indexOf(typeName, literalStart);
+
+    const fillAction = new vscode.CodeAction(
+      `Fill all fields of '${typeName}' (Go Assistant)`,
+      vscode.CodeActionKind.Refactor,
+    );
+    fillAction.command = {
+      command: "go-assistant.fillAllFields",
+      title: "Fill All Fields",
+      arguments: [document.uri, range.start, typeName, typeNameCol],
+    };
+    actions.push(fillAction);
+
+    return actions;
   }
 
   private createRunDebugTestActions(

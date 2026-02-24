@@ -149,12 +149,12 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
   ): Promise<vscode.CodeLens[]> {
     const lenses: vscode.CodeLens[] = [];
 
-    // Find generated Go file
-    const generatedFile = await this.findGeneratedGoFile(document);
-    if (generatedFile) {
+    // Find generated Go files
+    const generatedFiles = await this.findGeneratedGoFiles(document);
+    if (generatedFiles.length > 0) {
       // Navigation to generated Go struct
-      const goLocation = await this.findInGeneratedFile(
-        generatedFile,
+      const goLocation = await this.findInAnyGeneratedFile(
+        generatedFiles,
         `type ${element.name} struct`,
       );
       if (goLocation) {
@@ -165,28 +165,6 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
             arguments: [goLocation.uri, { selection: goLocation.range }],
           }),
         );
-      }
-
-      // Go references via go-assistant panel
-      if (goLocation) {
-        const refs = await this.findMessageReferences(
-          generatedFile,
-          element.name,
-        );
-        if (refs.length > 0) {
-          lenses.push(
-            new vscode.CodeLens(range, {
-              title: `${refs.length} ${refs.length === 1 ? "referência" : "referências"}`,
-              command: "go-assistant.showReferences",
-              arguments: [
-                goLocation.uri,
-                goLocation.range.start,
-                refs,
-                element.name,
-              ],
-            }),
-          );
-        }
       }
     }
 
@@ -203,11 +181,11 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
   ): Promise<vscode.CodeLens[]> {
     const lenses: vscode.CodeLens[] = [];
 
-    const generatedFile = await this.findGeneratedGoFile(document);
-    if (generatedFile) {
+    const generatedFiles = await this.findGeneratedGoFiles(document);
+    if (generatedFiles.length > 0) {
       // Navigation to generated Go enum const
-      const goLocation = await this.findInGeneratedFile(
-        generatedFile,
+      const goLocation = await this.findInAnyGeneratedFile(
+        generatedFiles,
         `${element.name}_`,
       );
       if (goLocation) {
@@ -216,20 +194,6 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
             title: `Go enum`,
             command: "vscode.open",
             arguments: [goLocation.uri, { selection: goLocation.range }],
-          }),
-        );
-      }
-
-      // Count Go references
-      const refCount = await this.countGoReferences(
-        generatedFile,
-        element.name,
-      );
-      if (refCount > 0) {
-        lenses.push(
-          new vscode.CodeLens(range, {
-            title: `${refCount} Go reference${refCount !== 1 ? "s" : ""}`,
-            command: "",
           }),
         );
       }
@@ -248,15 +212,15 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
   ): Promise<vscode.CodeLens[]> {
     const lenses: vscode.CodeLens[] = [];
 
-    const generatedFile = await this.findGeneratedGoFile(document);
-    if (generatedFile) {
+    const generatedFiles = await this.findGeneratedGoFiles(document);
+    if (generatedFiles.length > 0) {
       // Navigation to generated gRPC interfaces
-      const clientInterface = await this.findInGeneratedFile(
-        generatedFile,
+      const clientInterface = await this.findInAnyGeneratedFile(
+        generatedFiles,
         `type ${element.name}Client interface`,
       );
-      const serverInterface = await this.findInGeneratedFile(
-        generatedFile,
+      const serverInterface = await this.findInAnyGeneratedFile(
+        generatedFiles,
         `type ${element.name}Server interface`,
       );
 
@@ -285,52 +249,6 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
           }),
         );
       }
-
-      // User-written server implementation (not in generated files)
-      if (serverInterface) {
-        const serverImpls = await this.findConcreteServerImplementations(
-          element.name,
-          serverInterface.uri,
-          serverInterface.range.start,
-        );
-        if (serverImpls.length > 0) {
-          lenses.push(
-            new vscode.CodeLens(range, {
-              title:
-                serverImpls.length === 1
-                  ? `→ Server`
-                  : `${serverImpls.length} servidores`,
-              command: "go-assistant.showReferences",
-              arguments: [
-                serverInterface.uri,
-                serverInterface.range.start,
-                serverImpls,
-                `${element.name} Server`,
-              ],
-            }),
-          );
-        }
-      }
-
-      // User-written client usages
-      const clientUsages = await this.findClientUsageLocations(element.name);
-      if (clientUsages.length > 0) {
-        lenses.push(
-          new vscode.CodeLens(range, {
-            title:
-              clientUsages.length === 1
-                ? `→ Client`
-                : `${clientUsages.length} clients`,
-            command: "go-assistant.showReferences",
-            arguments: [
-              clientUsages[0].uri,
-              clientUsages[0].range.start,
-              clientUsages,
-              `${element.name} Client`,
-            ],
-          }),
-        );
-      }
     }
 
     return lenses;
@@ -346,11 +264,11 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
   ): Promise<vscode.CodeLens[]> {
     const lenses: vscode.CodeLens[] = [];
 
-    const generatedFile = await this.findGeneratedGoFile(document);
-    if (generatedFile && element.serviceName) {
+    const generatedFiles = await this.findGeneratedGoFiles(document);
+    if (generatedFiles.length > 0 && element.serviceName) {
       // Navigation to generated interface method
-      const methodLocation = await this.findInGeneratedFile(
-        generatedFile,
+      const methodLocation = await this.findInAnyGeneratedFile(
+        generatedFiles,
         `${element.name}(`,
       );
       if (methodLocation) {
@@ -365,41 +283,71 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
           }),
         );
       }
-
-      // Count client call usages
-      const callCount = await this.countClientCalls(
-        element.name,
-        element.serviceName,
-      );
-      if (callCount > 0) {
-        lenses.push(
-          new vscode.CodeLens(range, {
-            title: `${callCount} client call${callCount !== 1 ? "s" : ""}`,
-            command: "",
-          }),
-        );
-      }
-
-      // Count server implementations
-      const implCount = await this.countRpcImplementations(
-        element.name,
-        element.serviceName,
-      );
-      if (implCount > 0) {
-        lenses.push(
-          new vscode.CodeLens(range, {
-            title: `${implCount} server implementation${implCount !== 1 ? "s" : ""}`,
-            command: "",
-          }),
-        );
-      }
     }
 
     return lenses;
   }
 
   /**
-   * Find the generated .pb.go file for a .proto file
+   * Find all generated .pb.go and _grpc.pb.go files for a .proto file.
+   * Returns an array of file paths (may contain both variants).
+   */
+  private async findGeneratedGoFiles(
+    protoDocument: vscode.TextDocument,
+  ): Promise<string[]> {
+    const protoPath = protoDocument.uri.fsPath;
+    const protoDir = path.dirname(protoPath);
+    const protoBasename = path.basename(protoPath, ".proto");
+    const results: string[] = [];
+
+    // Fast path: same directory
+    for (const name of [
+      `${protoBasename}.pb.go`,
+      `${protoBasename}_grpc.pb.go`,
+    ]) {
+      try {
+        await fs.access(path.join(protoDir, name));
+        results.push(path.join(protoDir, name));
+      } catch {
+        // not found
+      }
+    }
+    if (results.length > 0) return results;
+
+    // Workspace-wide search for both variants
+    for (const pattern of [
+      `**/${protoBasename}.pb.go`,
+      `**/${protoBasename}_grpc.pb.go`,
+    ]) {
+      const found = await vscode.workspace.findFiles(
+        pattern,
+        "**/vendor/**",
+        5,
+      );
+      results.push(...found.map((f) => f.fsPath));
+    }
+    return results;
+  }
+
+  /**
+   * Find a specific string in any of the provided generated Go files.
+   * Returns the first location found.
+   */
+  private async findInAnyGeneratedFile(
+    goFilePaths: string[],
+    searchString: string,
+  ): Promise<vscode.Location | undefined> {
+    for (const p of goFilePaths) {
+      const loc = await this.findInGeneratedFile(p, searchString);
+      if (loc) return loc;
+    }
+    return undefined;
+  }
+
+  /**
+   * Find the generated .pb.go file for a .proto file.
+   * Checks the proto's own directory first (fast path), then searches workspace-wide
+   * so that generated files in sub-directories are also found.
    */
   private async findGeneratedGoFile(
     protoDocument: vscode.TextDocument,
@@ -408,21 +356,37 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
     const protoDir = path.dirname(protoPath);
     const protoBasename = path.basename(protoPath, ".proto");
 
-    // Common patterns for generated files:
-    // 1. same_name.pb.go (in same directory)
-    // 2. same_name_grpc.pb.go (gRPC service stubs)
-    const possiblePaths = [
+    // Fast path: same directory
+    const fastPaths = [
       path.join(protoDir, `${protoBasename}.pb.go`),
       path.join(protoDir, `${protoBasename}_grpc.pb.go`),
     ];
-
-    for (const filePath of possiblePaths) {
+    for (const filePath of fastPaths) {
       try {
         await fs.access(filePath);
         return filePath;
       } catch {
-        // File doesn't exist, try next
+        // not found
       }
+    }
+
+    // Workspace-wide search for generated pb.go files
+    const pbGoFiles = await vscode.workspace.findFiles(
+      `**/${protoBasename}.pb.go`,
+      "**/vendor/**",
+      5,
+    );
+    if (pbGoFiles.length > 0) {
+      return pbGoFiles[0].fsPath;
+    }
+
+    const grpcGoFiles = await vscode.workspace.findFiles(
+      `**/${protoBasename}_grpc.pb.go`,
+      "**/vendor/**",
+      5,
+    );
+    if (grpcGoFiles.length > 0) {
+      return grpcGoFiles[0].fsPath;
     }
 
     return undefined;
@@ -550,28 +514,51 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
     methodName: string,
     serviceName: string,
   ): Promise<number> {
+    return (await this.findClientCallLocations(methodName, serviceName)).length;
+  }
+
+  /**
+   * Find Go file locations where an RPC method is called via a client stub.
+   */
+  private async findClientCallLocations(
+    methodName: string,
+    serviceName: string,
+  ): Promise<vscode.Location[]> {
+    const locations: vscode.Location[] = [];
     try {
       const files = await vscode.workspace.findFiles(
         "**/*.go",
         "**/vendor/**",
         1000,
       );
-
-      let count = 0;
       for (const file of files) {
+        if (
+          file.fsPath.endsWith(".pb.go") ||
+          file.fsPath.endsWith("_grpc.pb.go")
+        ) {
+          continue;
+        }
         const content = await fs.readFile(file.fsPath, "utf-8");
-        // Look for client.MethodName( patterns
-        const regex = new RegExp(`\\.${methodName}\\s*\\(`, "g");
-        const matches = content.match(regex);
-        if (matches) {
-          count += matches.length;
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const lineRegex = new RegExp(`\\.${methodName}\\s*\\(`, "g");
+          let m: RegExpExecArray | null;
+          while ((m = lineRegex.exec(lines[i])) !== null) {
+            // Point to the method name (skip the leading dot)
+            const col = m.index + 1;
+            locations.push(
+              new vscode.Location(
+                file,
+                new vscode.Range(i, col, i, col + methodName.length),
+              ),
+            );
+          }
         }
       }
-
-      return count;
     } catch {
-      return 0;
+      // ignore
     }
+    return locations;
   }
 
   /**
@@ -581,31 +568,50 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
     methodName: string,
     serviceName: string,
   ): Promise<number> {
+    return (await this.findRpcImplementationLocations(methodName, serviceName))
+      .length;
+  }
+
+  /**
+   * Find Go file locations where an RPC method is implemented as a server handler.
+   */
+  private async findRpcImplementationLocations(
+    methodName: string,
+    serviceName: string,
+  ): Promise<vscode.Location[]> {
+    const locations: vscode.Location[] = [];
     try {
       const files = await vscode.workspace.findFiles(
         "**/*.go",
         "**/vendor/**",
         1000,
       );
-
-      let count = 0;
+      const regex = new RegExp(`func\\s+\\([^)]+\\)\\s+${methodName}\\s*\\(`);
       for (const file of files) {
+        if (
+          file.fsPath.endsWith(".pb.go") ||
+          file.fsPath.endsWith("_grpc.pb.go")
+        ) {
+          continue;
+        }
         const content = await fs.readFile(file.fsPath, "utf-8");
-        // Look for method implementations: func (s *Server) MethodName(
-        const regex = new RegExp(
-          `func\\s+\\([^)]+\\)\\s+${methodName}\\s*\\(`,
-          "g",
-        );
-        const matches = content.match(regex);
-        if (matches) {
-          count += matches.length;
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            const col = lines[i].indexOf(methodName);
+            locations.push(
+              new vscode.Location(
+                file,
+                new vscode.Range(i, col, i, col + methodName.length),
+              ),
+            );
+          }
         }
       }
-
-      return count;
     } catch {
-      return 0;
+      // ignore
     }
+    return locations;
   }
 
   /**

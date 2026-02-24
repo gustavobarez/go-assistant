@@ -2270,6 +2270,265 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     },
   );
 
+  // Register command: Add custom tag to a single struct field
+  const addCustomTagToFieldCommand = vscode.commands.registerCommand(
+    "go-assistant.addCustomTagToField",
+    async (uri: vscode.Uri, lineNumber: number) => {
+      try {
+        const document = await vscode.workspace.openTextDocument(uri);
+        const lineText = document.lineAt(lineNumber).text;
+
+        const fieldLineMatch = lineText.match(/^\s*(\w+)\s+\S/);
+        if (!fieldLineMatch) {
+          vscode.window.showErrorMessage("Could not parse field on this line");
+          return;
+        }
+        const fieldName = fieldLineMatch[1];
+
+        const tagKey = await vscode.window.showInputBox({
+          prompt: `Tag key for field '${fieldName}'`,
+          placeHolder: "json, db, yaml, bson, form, env, validate ...",
+          value: "json",
+        });
+        if (!tagKey) return;
+
+        const tagValue = await vscode.window.showInputBox({
+          prompt: `Tag value for '${tagKey}' on field '${fieldName}'`,
+          value: toTagName(
+            fieldName,
+            vscode.workspace
+              .getConfiguration("goAssistant.codeActions")
+              .get<string>("tagNamingCase", "camelCase")!,
+          ),
+        });
+        if (tagValue === undefined) return;
+
+        const lineRange = document.lineAt(lineNumber).range;
+        const existingTagsMatch = lineText.match(/^(.*?)\s*`([^`]*)`\s*$/);
+        let newLineText: string;
+        if (existingTagsMatch) {
+          const beforeTags = existingTagsMatch[1];
+          const existingTags = existingTagsMatch[2];
+          const tagKeyRegex = new RegExp(`\\b${tagKey}:"[^"]*"`);
+          if (tagKeyRegex.test(existingTags)) {
+            newLineText = `${beforeTags} \`${existingTags.replace(tagKeyRegex, `${tagKey}:"${tagValue}"`)}\``;
+          } else {
+            newLineText = `${beforeTags} \`${existingTags} ${tagKey}:"${tagValue}"\``;
+          }
+        } else {
+          newLineText = lineText.trimEnd() + ` \`${tagKey}:"${tagValue}"\``;
+        }
+
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(uri, lineRange, newLineText);
+        await vscode.workspace.applyEdit(edit);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Error adding custom tag: ${error}`);
+      }
+    },
+  );
+
+  // Register command: Add custom tag to all fields in a struct
+  const addCustomTagToAllFieldsCommand = vscode.commands.registerCommand(
+    "go-assistant.addCustomTagToAllFields",
+    async (uri: vscode.Uri, lineNumber: number, structName: string) => {
+      try {
+        const document = await vscode.workspace.openTextDocument(uri);
+
+        const tagKey = await vscode.window.showInputBox({
+          prompt: `Tag key for all fields of struct '${structName}'`,
+          placeHolder: "json, db, yaml, bson, form, env, validate ...",
+          value: "json",
+        });
+        if (!tagKey) return;
+
+        const symbols = await vscode.commands.executeCommand<
+          vscode.DocumentSymbol[]
+        >("vscode.executeDocumentSymbolProvider", uri);
+        if (!symbols) return;
+
+        const structSymbol = findSymbol(
+          symbols,
+          structName,
+          vscode.SymbolKind.Struct,
+        );
+        if (!structSymbol) {
+          vscode.window.showErrorMessage(
+            `Could not find struct '${structName}'`,
+          );
+          return;
+        }
+
+        const fields = (structSymbol.children || []).filter(
+          (c) =>
+            c.kind === vscode.SymbolKind.Field ||
+            c.kind === vscode.SymbolKind.Property,
+        );
+        if (fields.length === 0) {
+          vscode.window.showInformationMessage(
+            `No fields found in '${structName}'`,
+          );
+          return;
+        }
+
+        const edit = new vscode.WorkspaceEdit();
+        const tagCasing = vscode.workspace
+          .getConfiguration("goAssistant.codeActions")
+          .get<string>("tagNamingCase", "camelCase")!;
+        for (const field of fields) {
+          const fieldLine = document.lineAt(field.range.start.line).text;
+          const fieldText = document.getText(field.range);
+          const fieldMatch = fieldText.match(/^\s*(\w+)\s+/);
+          if (!fieldMatch) continue;
+
+          const fName = fieldMatch[1];
+          const tagValue = toTagName(fName, tagCasing);
+          const lineRange = document.lineAt(field.range.start.line).range;
+
+          const existingTagsMatch = fieldLine.match(/^(.*?)\s*`([^`]*)`\s*$/);
+          let newLineText: string;
+          if (existingTagsMatch) {
+            const beforeTags = existingTagsMatch[1];
+            const existingTags = existingTagsMatch[2];
+            const tagKeyRegex = new RegExp(`\\b${tagKey}:"[^"]*"`);
+            if (tagKeyRegex.test(existingTags)) {
+              newLineText = `${beforeTags} \`${existingTags.replace(tagKeyRegex, `${tagKey}:"${tagValue}"`)}\``;
+            } else {
+              newLineText = `${beforeTags} \`${existingTags} ${tagKey}:"${tagValue}"\``;
+            }
+          } else {
+            newLineText = fieldLine.trimEnd() + ` \`${tagKey}:"${tagValue}"\``;
+          }
+          edit.replace(uri, lineRange, newLineText);
+        }
+
+        await vscode.workspace.applyEdit(edit);
+        vscode.window.showInformationMessage(
+          `Added '${tagKey}' tags to all fields of '${structName}'`,
+        );
+      } catch (error) {
+        vscode.window.showErrorMessage(`Error adding custom tags: ${error}`);
+      }
+    },
+  );
+
+  // Register command: Fill all exported fields of a struct literal with zero values
+  const fillAllFieldsCommand = vscode.commands.registerCommand(
+    "go-assistant.fillAllFields",
+    async (
+      uri: vscode.Uri,
+      position: vscode.Position,
+      typeName: string,
+      typeNameCol: number,
+    ) => {
+      try {
+        const document = await vscode.workspace.openTextDocument(uri);
+
+        // Use gopls definition provider to find where the struct type is defined
+        const typeNamePosition = new vscode.Position(
+          position.line,
+          typeNameCol,
+        );
+        const definitions = await vscode.commands.executeCommand<
+          vscode.Location[]
+        >("vscode.executeDefinitionProvider", uri, typeNamePosition);
+
+        if (!definitions || definitions.length === 0) {
+          vscode.window.showErrorMessage(
+            `Could not find definition of '${typeName}'`,
+          );
+          return;
+        }
+
+        const defLocation = definitions[0];
+        const defDoc = await vscode.workspace.openTextDocument(defLocation.uri);
+        const defSymbols = await vscode.commands.executeCommand<
+          vscode.DocumentSymbol[]
+        >("vscode.executeDocumentSymbolProvider", defLocation.uri);
+
+        if (!defSymbols) {
+          vscode.window.showErrorMessage(
+            "Could not get symbols from definition file",
+          );
+          return;
+        }
+
+        const structSymbol = findSymbol(
+          defSymbols,
+          typeName,
+          vscode.SymbolKind.Struct,
+        );
+        if (!structSymbol) {
+          vscode.window.showErrorMessage(`Could not find struct '${typeName}'`);
+          return;
+        }
+
+        const fields = (structSymbol.children || []).filter(
+          (c) =>
+            c.kind === vscode.SymbolKind.Field ||
+            c.kind === vscode.SymbolKind.Property,
+        );
+
+        if (fields.length === 0) {
+          vscode.window.showInformationMessage(
+            `Struct '${typeName}' has no fields`,
+          );
+          return;
+        }
+
+        const line = document.lineAt(position.line).text;
+        const indent = line.match(/^\s*/)?.[0] || "";
+        const fieldLines: string[] = [];
+
+        for (const field of fields) {
+          const fieldText = defDoc.getText(field.range);
+          const fieldMatch = fieldText.match(/^\s*(\w+)\s+(.+)/);
+          if (!fieldMatch) continue;
+          const fName = fieldMatch[1];
+          // Skip unexported fields
+          if (!/^[A-Z]/.test(fName)) continue;
+          const fType = fieldMatch[2].replace(/`[^`]*`/g, "").trim();
+          fieldLines.push(`${indent}\t${fName}: ${goZeroValueForType(fType)},`);
+        }
+
+        if (fieldLines.length === 0) {
+          vscode.window.showInformationMessage(
+            `No exported fields found in '${typeName}'`,
+          );
+          return;
+        }
+
+        // Find and replace the struct literal on the current line
+        const literalRegex = new RegExp(
+          `(&?)${typeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{[^}]*\\}`,
+        );
+        const literalMatch = line.match(literalRegex);
+        if (!literalMatch || literalMatch.index === undefined) {
+          vscode.window.showErrorMessage(
+            "Could not locate struct literal on line",
+          );
+          return;
+        }
+
+        const prefix = literalMatch[1]; // "&" or ""
+        const matchStart = literalMatch.index;
+        const matchEnd = matchStart + literalMatch[0].length;
+        const newText = `${prefix}${typeName}{\n${fieldLines.join("\n")}\n${indent}}`;
+
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(
+          uri,
+          new vscode.Range(position.line, matchStart, position.line, matchEnd),
+          newText,
+        );
+        await vscode.workspace.applyEdit(edit);
+      } catch (error) {
+        console.error("Error filling struct fields:", error);
+        vscode.window.showErrorMessage(`Error filling fields: ${error}`);
+      }
+    },
+  );
+
   // Find and display go.mod location when a Go file is opened
   const onDidOpenTextDocument = vscode.workspace.onDidOpenTextDocument(
     async (document) => {
@@ -2372,6 +2631,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     moveSymbolUpCommand,
     moveSymbolDownCommand,
     addVarTypeCommand,
+    addCustomTagToFieldCommand,
+    addCustomTagToAllFieldsCommand,
+    fillAllFieldsCommand,
     onDidOpenTextDocument,
     onDidChangeTextDocument,
     onDidSaveTextDocument,
@@ -3438,6 +3700,23 @@ async function moveToPackage(uri: vscode.Uri, symbol: any): Promise<void> {
   }
 }
 
+// Helper function to convert a struct field name to a tag-friendly name
+function toTagName(fieldName: string, casing: string): string {
+  const words = fieldName.match(
+    /[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+/g,
+  ) ?? [fieldName];
+  if (casing === "snakeCase") {
+    return words.map((w) => w.toLowerCase()).join("_");
+  }
+  return words
+    .map((w, i) =>
+      i === 0
+        ? w.toLowerCase()
+        : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(),
+    )
+    .join("");
+}
+
 // Helper function to find a symbol by name and kind
 function findSymbol(
   symbols: vscode.DocumentSymbol[],
@@ -3543,3 +3822,33 @@ function inferBasicType(expr: string): string | null {
 
 // This method is called when your extension is deactivated
 export function deactivate() {}
+
+/**
+ * Returns the Go zero value string for a given type name.
+ * Used by the "Fill All Fields" feature.
+ */
+function goZeroValueForType(typeName: string): string {
+  const t = typeName.trim();
+  if (t === "string") return '""';
+  if (t === "bool") return "false";
+  if (
+    /^(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|byte|rune|uintptr|float32|float64|complex64|complex128)$/.test(
+      t,
+    )
+  ) {
+    return "0";
+  }
+  if (
+    t.startsWith("*") ||
+    t.startsWith("[]") ||
+    t.startsWith("map[") ||
+    t.startsWith("chan ") ||
+    t.startsWith("func(") ||
+    t === "interface{}" ||
+    t === "any"
+  ) {
+    return "nil";
+  }
+  // Named struct or other composite type – use zero struct literal
+  return `${t}{}`;
+}
