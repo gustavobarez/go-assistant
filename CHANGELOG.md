@@ -2,6 +2,13 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.1.7] - 2026-02-24
+
+### Removido
+
+- **Postfix Completion Provider**: Removido o provider de postfix completions (`.if`, `.for`, `.print`, etc.) que causava sugestões indevidas ao digitar em expressões como `fmt.P`. Essa responsabilidade fica a cargo de outras extensões
+- **Setting `goAssistant.postfixCompletion.enable`**: Removido junto com o provider
+
 ## [0.1.6] - 2026-02-25
 
 ### Adicionado

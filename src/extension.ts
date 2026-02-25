@@ -8,7 +8,6 @@ import { GoFileMoveHelper } from "./goFileMoveHelper";
 import { GoInlayHintsProvider } from "./goInlayHintsProvider";
 import { GoInlineValuesProvider } from "./goInlineValuesProvider";
 import { findGoModForWorkspace, getGoModuleRoot } from "./goModFinder";
-import { GoPostfixCompletionProvider } from "./goPostfixCompletionProvider";
 import { GoProtoCodeLensProvider } from "./goProtoCodeLensProvider";
 import { GoReferencesViewProvider, SymbolInfo } from "./goReferencesView";
 import {
@@ -242,15 +241,6 @@ export function activate(context: vscode.ExtensionContext) {
     { language: "go", scheme: "file" },
     inlayHintsProvider,
   );
-
-  // Initialize Postfix Completion provider for Go files
-  const postfixCompletionProvider = new GoPostfixCompletionProvider();
-  const postfixCompletionDisposable =
-    vscode.languages.registerCompletionItemProvider(
-      { language: "go", scheme: "file" },
-      postfixCompletionProvider,
-      ".", // Trigger character
-    );
 
   // Initialize Code Action provider for Go files
   const codeActionProvider = new GoCodeActionProvider();
@@ -2594,7 +2584,6 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     codeLensDisposable,
     protoCodeLensDisposable,
     inlayHintsDisposable,
-    postfixCompletionDisposable,
     codeActionDisposable,
     inlineValuesDisposable,
     showReferencesCommand,

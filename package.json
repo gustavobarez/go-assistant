@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.6",
+  "version": "0.1.7",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -371,11 +371,6 @@
           "type": "boolean",
           "default": true,
           "description": "Mostra diagnóstico de build tags (se o arquivo será compilado)"
-        },
-        "goAssistant.postfixCompletion.enable": {
-          "type": "boolean",
-          "default": true,
-          "description": "Habilita postfix completions (.if, .for, .print, etc.)"
         },
         "goAssistant.codeActions.enable": {
           "type": "boolean",
