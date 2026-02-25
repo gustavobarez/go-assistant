@@ -2,6 +2,20 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.1.8] - 2026-02-24
+
+### Adicionado
+
+#### 🚀 CodeLens — main.go
+
+- **Run / Debug main.go**: Botões `▶ Run` e `▶ Debug` aparecem acima de `func main()` em arquivos com `package main`. Run executa `go run .` no diretório do arquivo; Debug inicia uma sessão de debug via `go.debug`
+
+### Corrigido
+
+#### 🧪 Testing — Histórico
+
+- **Run All Tests agora gera histórico**: O botão de rodar todos os testes (topo da view) não registrava o resultado no histórico — corrigido para se comportar igual aos demais comandos de run
+
 ## [0.1.7] - 2026-02-24
 
 ### Removido

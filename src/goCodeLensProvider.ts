@@ -77,6 +77,12 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
     const codeLenses: vscode.CodeLens[] = [];
 
     try {
+      // Run / Debug main.go
+      if (config.runDebug) {
+        const mainLenses = await this.createMainLenses(document);
+        codeLenses.push(...mainLenses);
+      }
+
       // Debug table-driven tests
       if (config.debugTests) {
         const testLenses = await this.createTableDrivenTestLenses(document);
@@ -862,6 +868,46 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
       );
       return [];
     }
+  }
+
+  private async createMainLenses(
+    document: vscode.TextDocument,
+  ): Promise<vscode.CodeLens[]> {
+    const lenses: vscode.CodeLens[] = [];
+    const text = document.getText();
+
+    if (!/^package\s+main\b/m.test(text)) {
+      return lenses;
+    }
+
+    const mainFuncMatch = /^func\s+main\s*\(\s*\)/m.exec(text);
+    if (!mainFuncMatch) {
+      return lenses;
+    }
+
+    const line = document.positionAt(mainFuncMatch.index).line;
+    const range = new vscode.Range(line, 0, line, 0);
+    const filePath = document.uri.fsPath;
+
+    lenses.push(
+      new vscode.CodeLens(range, {
+        title: "▶ Run",
+        command: "go-assistant.runMain",
+        tooltip: "Run main.go",
+        arguments: [filePath],
+      }),
+    );
+
+    lenses.push(
+      new vscode.CodeLens(range, {
+        title: "▶ Debug",
+        command: "go-assistant.debugMain",
+        tooltip: "Debug main.go",
+        arguments: [filePath],
+      }),
+    );
+
+    return lenses;
   }
 
   private async createTableDrivenTestLenses(

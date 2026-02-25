@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.7",
+  "version": "0.1.8",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -88,6 +88,16 @@
       {
         "command": "go-assistant.debugAllTests",
         "title": "Debug All Tests",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "go-assistant.runMain",
+        "title": "Run main.go",
+        "icon": "$(run)"
+      },
+      {
+        "command": "go-assistant.debugMain",
+        "title": "Debug main.go",
         "icon": "$(debug-alt)"
       },
       {

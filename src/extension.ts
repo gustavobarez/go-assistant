@@ -472,6 +472,7 @@ export function activate(context: vscode.ExtensionContext) {
         { cwd: workspacePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
+          const historyEntries: TestRunEntry[] = [];
           // Update all known tests
           for (const pkg of testsViewProvider.getPackages()) {
             for (const file of pkg.files) {
@@ -490,9 +491,18 @@ export function activate(context: vscode.ExtensionContext) {
                   status,
                   duration,
                 );
+                historyEntries.push({
+                  testName: test.name,
+                  packagePath: pkg.packagePath,
+                  file: test.file,
+                  status: status === "unknown" ? "unknown" : status,
+                  duration,
+                });
               }
             }
           }
+
+          testsViewProvider.addToHistory("all tests", historyEntries);
 
           // Discover subtests from output
           testsViewProvider.updateSubTestsFromOutput(output);
@@ -2580,6 +2590,33 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
   );
 
   // Add all disposables to subscriptions
+  const runMainCommand = vscode.commands.registerCommand(
+    "go-assistant.runMain",
+    async (filePath: string) => {
+      const dir = require("path").dirname(filePath);
+      const terminal = vscode.window.createTerminal({
+        name: "Go Run",
+        cwd: dir,
+      });
+      terminal.show();
+      sendCmd(terminal, dir, "go run .");
+    },
+  );
+
+  const debugMainCommand = vscode.commands.registerCommand(
+    "go-assistant.debugMain",
+    async (filePath: string) => {
+      const dir = require("path").dirname(filePath);
+      await vscode.debug.startDebugging(undefined, {
+        type: "go",
+        name: "Debug main",
+        request: "launch",
+        mode: "auto",
+        program: dir,
+      });
+    },
+  );
+
   context.subscriptions.push(
     codeLensDisposable,
     protoCodeLensDisposable,
@@ -2629,6 +2666,8 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     onDidChangeConfiguration,
     diagnosticsProvider,
     fileMoveHelper,
+    runMainCommand,
+    debugMainCommand,
   );
 }
 
