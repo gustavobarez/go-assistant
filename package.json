@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.8",
+  "version": "0.1.9",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -176,6 +176,10 @@
       {
         "command": "go-assistant.fillAllFields",
         "title": "Go Assistant: Fill All Struct Fields"
+      },
+      {
+        "command": "go-assistant.addMethodToInterface",
+        "title": "Go Assistant: Add Method to Interface and All Implementations"
       }
     ],
     "views": {
@@ -240,9 +244,14 @@
           "group": "navigation@4"
         },
         {
+          "command": "go-assistant.openCoverageHtml",
+          "when": "view == goAssistantTests && goAssistant.coverageAvailable",
+          "group": "navigation@5"
+        },
+        {
           "command": "go-assistant.resetTests",
           "when": "view == goAssistantTests",
-          "group": "navigation@5"
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [

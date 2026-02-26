@@ -2,6 +2,31 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.1.9] - 2026-02-26
+
+### Adicionado
+
+#### 🆕 Code Actions — Interface
+
+- **Add method to interface and all implementations**: Nova ação disponível via `Ctrl+.` em qualquer parte de uma interface (`type`, nome, palavra-chave `interface` ou dentro do corpo). Insere imediatamente um snippet com tab stops (`name`, `params`, `return`) na última linha da interface. Ao mover o cursor para fora da linha, adiciona automaticamente o método stub (`// TODO: implement me` + `panic("implement me")`) em todos os structs que implementam a interface e redireciona o editor para a primeira implementação
+
+### Corrigido
+
+#### 🆕 Code Actions — Interface
+
+- **Detecção de interface ampliada**: As code actions de interface agora aparecem ao posicionar o cursor em qualquer ponto do bloco — `type`, nome, `interface {`, campos internos ou `}` — e não apenas sobre o nome exato
+
+#### 🆕 Code Actions — Fill All Fields
+
+- **Zero values corretos por tipo**: Cada field preenchido agora recebe o zero value adequado ao seu tipo:
+  - `string` → `""`
+  - `int`, `float64`, demais numéricos → `0`
+  - `bool` → `false`
+  - Ponteiros, slices, maps, channels, funções → `nil`
+  - `error` → `nil`
+  - Interfaces nomeadas (`io.Reader`, `context.Context`, etc.) → `nil` (detectado via hover do gopls)
+  - Structs nomeados → `T{}`
+
 ## [0.1.8] - 2026-02-24
 
 ### Adicionado

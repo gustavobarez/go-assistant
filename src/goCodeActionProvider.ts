@@ -420,6 +420,21 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     return undefined;
   }
 
+  /** Returns the first top-level symbol of the given kind whose full range
+   *  (not just selectionRange) contains the position. */
+  private findEnclosingSymbolByRange(
+    symbols: vscode.DocumentSymbol[],
+    position: vscode.Position,
+    kind: vscode.SymbolKind,
+  ): vscode.DocumentSymbol | undefined {
+    for (const symbol of symbols) {
+      if (symbol.kind === kind && symbol.range.contains(position)) {
+        return symbol;
+      }
+    }
+    return undefined;
+  }
+
   private findSymbolByName(
     symbols: vscode.DocumentSymbol[],
     name: string,
@@ -1978,6 +1993,31 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
         return actions;
       }
 
+      // Check if cursor is anywhere inside an interface's full range
+      // (handles cursor on `type`, `interface` keyword, name, or inside the body)
+      const enclosingInterface = this.findEnclosingSymbolByRange(
+        symbols,
+        range.start,
+        vscode.SymbolKind.Interface,
+      );
+
+      if (enclosingInterface) {
+        const isFirstAfterImports = await this.isFirstSymbolAfterImports(
+          document,
+          enclosingInterface,
+          symbols,
+        );
+        actions.push(
+          ...(await this.createInterfaceActions(
+            document,
+            enclosingInterface,
+            symbols,
+            isFirstAfterImports,
+          )),
+        );
+        return actions;
+      }
+
       const symbol = this.findSymbolAtPosition(symbols, range.start);
 
       if (!symbol) {
@@ -1991,19 +2031,8 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
         symbols,
       );
 
-      // Interface actions
-      if (symbol.kind === vscode.SymbolKind.Interface) {
-        actions.push(
-          ...(await this.createInterfaceActions(
-            document,
-            symbol,
-            symbols,
-            isFirstAfterImports,
-          )),
-        );
-      }
       // Struct actions
-      else if (
+      if (
         symbol.kind === vscode.SymbolKind.Struct ||
         symbol.kind === vscode.SymbolKind.Class
       ) {
@@ -2153,6 +2182,23 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       arguments: [document.uri, symbol],
     };
     actions.push(generateAction);
+
+    // Add method to interface and all implementations
+    const addMethodAction = new vscode.CodeAction(
+      `Add method to interface ${symbol.name} and all implementations (Go Assistant)`,
+      vscode.CodeActionKind.Refactor,
+    );
+    addMethodAction.command = {
+      command: "go-assistant.addMethodToInterface",
+      title: "Add Method to Interface and All Implementations", // keep English
+      arguments: [
+        document.uri,
+        symbol.selectionRange.start,
+        symbol.name,
+        symbol.range,
+      ],
+    };
+    actions.push(addMethodAction);
 
     // Check if this is the last symbol
     const isLast = await this.isLastTopLevelSymbol(
@@ -2483,17 +2529,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
   ): Promise<vscode.CodeAction[]> {
     const actions: vscode.CodeAction[] = [];
 
-    const line = document.lineAt(range.start.line).text;
-
-    // Match struct literal: &TypeName{ or TypeName{ (with optional empty body)
-    const structLiteralMatch = line.match(/(&?)([A-Za-z_]\w*)\s*\{/);
-    if (!structLiteralMatch) {
-      return actions;
-    }
-
-    const typeName = structLiteralMatch[2];
-
-    // Skip Go keywords and built-in identifiers
     const goKeywords = new Set([
       "if",
       "for",
@@ -2521,26 +2556,68 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       "else",
       "default",
     ]);
-    if (goKeywords.has(typeName)) {
-      return actions;
+
+    // Helper to check a single line for a struct literal and validate the cursor
+    // is within the literal span. Returns { typeName, typeNameCol } or null.
+    const tryLine = (
+      lineText: string,
+      cursorCol: number | null,
+    ): { typeName: string; typeNameCol: number } | null => {
+      const structLiteralMatch = lineText.match(/(&?)([A-Za-z_]\w*)\s*\{/);
+      if (!structLiteralMatch) return null;
+
+      const typeName = structLiteralMatch[2];
+      if (goKeywords.has(typeName)) return null;
+      if (!/^[A-Z]/.test(typeName)) return null;
+
+      if (cursorCol !== null) {
+        const literalStart = structLiteralMatch.index ?? 0;
+        const closingBrace = lineText.indexOf("}", literalStart);
+        const literalEnd =
+          closingBrace >= 0 ? closingBrace + 1 : lineText.length;
+        if (cursorCol < literalStart || cursorCol > literalEnd) return null;
+      }
+
+      const typeNameCol = lineText.indexOf(
+        typeName,
+        structLiteralMatch.index ?? 0,
+      );
+      return { typeName, typeNameCol };
+    };
+
+    // 1. Try the current line first (original behaviour)
+    const currentLine = document.lineAt(range.start.line).text;
+    let result = tryLine(currentLine, range.start.character);
+    let targetLine = range.start.line;
+
+    // 2. If not found on current line, scan up to 20 previous lines for an
+    //    unclosed struct literal (e.g. cursor is inside a multi-line literal).
+    if (!result) {
+      for (
+        let i = range.start.line - 1;
+        i >= Math.max(0, range.start.line - 20);
+        i--
+      ) {
+        const lineText = document.lineAt(i).text;
+        // We found a line that opens a struct — check it is really unclosed:
+        // the `{` must appear after the type name with no matching `}` on that same line
+        const candidate = tryLine(lineText, /* no cursor restriction */ null);
+        if (candidate) {
+          const openIdx = lineText.lastIndexOf("{");
+          const closeIdx = lineText.indexOf("}", openIdx);
+          if (closeIdx === -1) {
+            // The `{` has no closing `}` on this line → cursor is inside
+            result = candidate;
+            targetLine = i;
+            break;
+          }
+        }
+      }
     }
 
-    // Only offer for exported types (uppercase) or types that look like structs
-    if (!/^[A-Z]/.test(typeName)) {
-      return actions;
-    }
+    if (!result) return actions;
 
-    // Ensure cursor is within the struct literal span
-    const literalStart = structLiteralMatch.index ?? 0;
-    const closingBrace = line.indexOf("}", literalStart);
-    const literalEnd = closingBrace >= 0 ? closingBrace + 1 : line.length;
-    const cursorCol = range.start.character;
-    if (cursorCol < literalStart || cursorCol > literalEnd) {
-      return actions;
-    }
-
-    // Position of the type name for gopls definition lookup
-    const typeNameCol = line.indexOf(typeName, literalStart);
+    const { typeName, typeNameCol } = result;
 
     const fillAction = new vscode.CodeAction(
       `Fill all fields of '${typeName}' (Go Assistant)`,
@@ -2549,7 +2626,13 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     fillAction.command = {
       command: "go-assistant.fillAllFields",
       title: "Fill All Fields",
-      arguments: [document.uri, range.start, typeName, typeNameCol],
+      // Pass the position on the line that contains the type name so gopls can resolve it
+      arguments: [
+        document.uri,
+        new vscode.Position(targetLine, typeNameCol),
+        typeName,
+        typeNameCol,
+      ],
     };
     actions.push(fillAction);
 

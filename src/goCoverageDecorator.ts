@@ -16,6 +16,11 @@ export class GoCoverageDecorator {
   private coveredDecorationType!: vscode.TextEditorDecorationType;
   private uncoveredDecorationType!: vscode.TextEditorDecorationType;
   private coverageData: Map<string, CoverageData[]> = new Map();
+  private lastLoadedFilePath: string | undefined;
+
+  getLastLoadedFilePath(): string | undefined {
+    return this.lastLoadedFilePath;
+  }
 
   constructor() {
     this.createDecorationTypes();
@@ -81,6 +86,7 @@ export class GoCoverageDecorator {
 
       const content = fs.readFileSync(coverageFilePath, "utf-8");
       this.parseCoverageData(content);
+      this.lastLoadedFilePath = coverageFilePath;
       return true;
     } catch (error) {
       console.error("Error loading coverage file:", error);
@@ -187,6 +193,11 @@ export class GoCoverageDecorator {
         this.applyDecorationsToEditor(editor);
       }
     }
+    vscode.commands.executeCommand(
+      "setContext",
+      "goAssistant.coverageAvailable",
+      true,
+    );
   }
 
   clearDecorations(): void {
@@ -197,6 +208,11 @@ export class GoCoverageDecorator {
       }
     }
     this.coverageData.clear();
+    vscode.commands.executeCommand(
+      "setContext",
+      "goAssistant.coverageAvailable",
+      false,
+    );
     console.log("Cleared all coverage decorations");
   }
 

@@ -16,6 +16,32 @@ import {
   TestRunEntry,
 } from "./goTestsView";
 
+/**
+ * Determine pass/fail status for a single test from `go test` output.
+ *
+ * Handles three cases:
+ *  1. Verbose run: `--- PASS/FAIL: TestName` lines are present.
+ *  2. Cached run (`(cached)`): Go reuses the previous result and emits no
+ *     individual PASS/FAIL lines, but the package still prints `ok  \t…`.
+ *     A cached result is always a pass (Go never caches failures).
+ *  3. Package-level pass without verbose: the `ok  \t` line is present but
+ *     no per-test lines – treat missing individual entries as passed.
+ */
+function detectTestStatus(
+  output: string,
+  testName: string,
+): "pass" | "fail" | "unknown" {
+  const esc = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(`--- PASS: ${esc}\\b`, "m").test(output)) return "pass";
+  if (new RegExp(`--- FAIL: ${esc}\\b`, "m").test(output)) return "fail";
+  // No individual line found – check if the whole package passed.
+  // `ok  \t<pkg>` (with spaces/tab) appears when every test in the package
+  // passed, including after a cached run.  If the package passed and this
+  // specific test didn't fail, it must have passed too.
+  if (/^ok[ \t]/m.test(output)) return "pass";
+  return "unknown";
+}
+
 /** Parse `--- PASS/FAIL: TestName (0.12s)` → seconds, or undefined. */
 function parseTestDuration(
   output: string,
@@ -478,13 +504,7 @@ export function activate(context: vscode.ExtensionContext) {
             for (const file of pkg.files) {
               for (const test of file.tests) {
                 const duration = parseTestDuration(output, test.name);
-                const pass = new RegExp(`--- PASS: ${test.name}`, "m").test(
-                  output,
-                );
-                const fail = new RegExp(`--- FAIL: ${test.name}`, "m").test(
-                  output,
-                );
-                const status = pass ? "pass" : fail ? "fail" : "unknown";
+                const status = detectTestStatus(output, test.name);
                 testsViewProvider.updateTestStatus(
                   test.name,
                   pkg.packagePath,
@@ -604,7 +624,7 @@ export function activate(context: vscode.ExtensionContext) {
       const summary = newIds
         .map((id) => {
           const f = AVAILABLE_TEST_FLAGS.find((x) => x.id === id)!;
-          if (f.external) return null;
+          if (f.external) return f.label; // e.g. "Coverage Profile (save to file)"
           return f.promptForValue && newValues[id]
             ? `${f.flag}="${newValues[id]}"`
             : f.flag;
@@ -670,24 +690,18 @@ export function activate(context: vscode.ExtensionContext) {
             for (const file of pkg.files) {
               for (const test of file.tests) {
                 const duration = parseTestDuration(output, test.name);
-                const pass = new RegExp(`--- PASS: ${test.name}`, "m").test(
-                  output,
-                );
-                const fail = new RegExp(`--- FAIL: ${test.name}`, "m").test(
-                  output,
-                );
-                const status = pass ? "pass" : fail ? "fail" : "unknown";
+                const status2 = detectTestStatus(output, test.name);
                 testsViewProvider.updateTestStatus(
                   test.name,
                   pkg.packagePath,
-                  status,
+                  status2,
                   duration,
                 );
                 historyEntries.push({
                   testName: test.name,
                   packagePath: pkg.packagePath,
                   file: test.file,
-                  status: status === "unknown" ? "unknown" : status,
+                  status: status2 === "unknown" ? "unknown" : status2,
                   duration,
                 });
 
@@ -793,54 +807,20 @@ export function activate(context: vscode.ExtensionContext) {
           for (const file of item.packageInfo.files) {
             for (const test of file.tests) {
               const duration = parseTestDuration(output, test.name);
-              const passMatch = new RegExp(`--- PASS: ${test.name}`, "m").test(
-                output,
+              const status = detectTestStatus(output, test.name);
+              testsViewProvider.updateTestStatus(
+                test.name,
+                packagePath,
+                status,
+                duration,
               );
-              const failMatch = new RegExp(`--- FAIL: ${test.name}`, "m").test(
-                output,
-              );
-
-              if (passMatch) {
-                testsViewProvider.updateTestStatus(
-                  test.name,
-                  packagePath,
-                  "pass",
-                  duration,
-                );
-                historyEntries.push({
-                  testName: test.name,
-                  packagePath,
-                  file: test.file,
-                  status: "pass",
-                  duration,
-                });
-              } else if (failMatch) {
-                testsViewProvider.updateTestStatus(
-                  test.name,
-                  packagePath,
-                  "fail",
-                  duration,
-                );
-                historyEntries.push({
-                  testName: test.name,
-                  packagePath,
-                  file: test.file,
-                  status: "fail",
-                  duration,
-                });
-              } else {
-                testsViewProvider.updateTestStatus(
-                  test.name,
-                  packagePath,
-                  "unknown",
-                );
-                historyEntries.push({
-                  testName: test.name,
-                  packagePath,
-                  file: test.file,
-                  status: "unknown",
-                });
-              }
+              historyEntries.push({
+                testName: test.name,
+                packagePath,
+                file: test.file,
+                status,
+                duration,
+              });
 
               // Sub-tests
               if (test.subTests) {
@@ -933,54 +913,20 @@ export function activate(context: vscode.ExtensionContext) {
 
           for (const test of item.fileInfo.tests) {
             const duration = parseTestDuration(output, test.name);
-            const passMatch = new RegExp(`--- PASS: ${test.name}`, "m").test(
-              output,
+            const status = detectTestStatus(output, test.name);
+            testsViewProvider.updateTestStatus(
+              test.name,
+              packagePath,
+              status,
+              duration,
             );
-            const failMatch = new RegExp(`--- FAIL: ${test.name}`, "m").test(
-              output,
-            );
-
-            if (passMatch) {
-              testsViewProvider.updateTestStatus(
-                test.name,
-                packagePath,
-                "pass",
-                duration,
-              );
-              historyEntries.push({
-                testName: test.name,
-                packagePath,
-                file: test.file,
-                status: "pass",
-                duration,
-              });
-            } else if (failMatch) {
-              testsViewProvider.updateTestStatus(
-                test.name,
-                packagePath,
-                "fail",
-                duration,
-              );
-              historyEntries.push({
-                testName: test.name,
-                packagePath,
-                file: test.file,
-                status: "fail",
-                duration,
-              });
-            } else {
-              testsViewProvider.updateTestStatus(
-                test.name,
-                packagePath,
-                "unknown",
-              );
-              historyEntries.push({
-                testName: test.name,
-                packagePath,
-                file: test.file,
-                status: "unknown",
-              });
-            }
+            historyEntries.push({
+              testName: test.name,
+              packagePath,
+              file: test.file,
+              status,
+              duration,
+            });
 
             // Sub-tests
             if (test.subTests) {
@@ -1069,14 +1015,7 @@ export function activate(context: vscode.ExtensionContext) {
           const output = stdout + stderr;
           const duration = parseTestDuration(output, testName);
 
-          let status: "pass" | "fail" | "unknown";
-          if (error) {
-            status = "fail";
-          } else if (output.includes("PASS") || output.includes("ok\t")) {
-            status = "pass";
-          } else {
-            status = "unknown";
-          }
+          const status = error ? "fail" : detectTestStatus(output, testName);
 
           testsViewProvider.updateTestStatus(
             testName,
@@ -1089,7 +1028,7 @@ export function activate(context: vscode.ExtensionContext) {
               testName,
               packagePath,
               file: filePath,
-              status: status === "unknown" ? "unknown" : status,
+              status,
               duration,
             },
           ]);
@@ -1183,14 +1122,7 @@ export function activate(context: vscode.ExtensionContext) {
           const output = stdout + stderr;
           const duration = parseTestDuration(output, testName);
 
-          let status: "pass" | "fail" | "unknown";
-          if (error) {
-            status = "fail";
-          } else if (output.includes("PASS") || output.includes("ok\t")) {
-            status = "pass";
-          } else {
-            status = "unknown";
-          }
+          const status = error ? "fail" : detectTestStatus(output, testName);
 
           testsViewProvider.updateTestStatus(
             testName,
@@ -1203,7 +1135,7 @@ export function activate(context: vscode.ExtensionContext) {
               testName,
               packagePath,
               file: args.filePath,
-              status: status === "unknown" ? "unknown" : status,
+              status,
               duration,
             },
           ]);
@@ -1511,7 +1443,13 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const fs = require("fs");
-      const coverageFile = coverageFilePath(workspacePath);
+      const path = require("path");
+      const { execFile } = require("child_process");
+
+      // Use the most recently loaded .out file (any scope: all / package / file / test)
+      const coverageFile =
+        coverageDecorator.getLastLoadedFilePath() ??
+        coverageFilePath(workspacePath);
 
       if (!fs.existsSync(coverageFile)) {
         vscode.window.showErrorMessage(
@@ -1520,12 +1458,23 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const terminal = vscode.window.createTerminal({
-        name: "Go Coverage",
-        cwd: workspacePath,
-      });
-      terminal.show();
-      sendCmd(terminal, workspacePath, `go tool cover -html="${coverageFile}"`);
+      const htmlFile = path.join(workspacePath, "coverage.html");
+
+      execFile(
+        "go",
+        ["tool", "cover", `-html=${coverageFile}`, `-o=${htmlFile}`],
+        { cwd: workspacePath },
+        (error: any) => {
+          if (error) {
+            vscode.window.showErrorMessage(
+              `Failed to generate coverage HTML: ${error.message}`,
+            );
+            return;
+          }
+          // Open in the system's default browser
+          vscode.env.openExternal(vscode.Uri.file(htmlFile));
+        },
+      );
     },
   );
 
@@ -2104,6 +2053,187 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     },
   );
 
+  // Register command to add a method to an interface and all its implementations
+  const addMethodToInterfaceCommand = vscode.commands.registerCommand(
+    "go-assistant.addMethodToInterface",
+    async (
+      uri: vscode.Uri,
+      namePosition: vscode.Position,
+      interfaceName: string,
+      interfaceRange: any,
+    ) => {
+      // 1. Capture implementors BEFORE any edits (while the interface is still fully implemented)
+      let implementors: vscode.Location[] = [];
+      try {
+        const found = await vscode.commands.executeCommand<vscode.Location[]>(
+          "vscode.executeImplementationProvider",
+          uri,
+          namePosition,
+        );
+        if (found) {
+          implementors = found;
+        }
+      } catch (_e) {
+        // No implementations yet — will add method to interface only
+      }
+
+      // 2. Open the interface file and insert a snippet at the bottom of the interface body
+      const document = await vscode.workspace.openTextDocument(uri);
+      const editor = await vscode.window.showTextDocument(document);
+
+      const insertedLine: number = interfaceRange.end.line;
+      const insertPos = new vscode.Position(insertedLine, 0);
+      const snippet = new vscode.SnippetString(
+        "\t${1:newMethod}(${2:}) ${3}\n",
+      );
+      await editor.insertSnippet(snippet, insertPos);
+
+      // 3. Watch for the cursor leaving the inserted line, then finalize
+      let finalized = false;
+      const selListener = vscode.window.onDidChangeTextEditorSelection(
+        async (e) => {
+          if (finalized) return;
+          if (e.textEditor.document.uri.toString() !== uri.toString()) return;
+
+          const currentLine = e.selections[0].active.line;
+          if (currentLine === insertedLine) return; // still editing
+
+          finalized = true;
+          selListener.dispose();
+
+          // 4. Read back what the user typed
+          const doc = e.textEditor.document;
+          const methodLineText = doc.lineAt(insertedLine).text.trim();
+          if (!methodLineText) return; // line was deleted/left blank
+
+          // Parse: methodName(params) returnType
+          const methodMatch = methodLineText.match(
+            /^(\w+)\(([^)]*)\)\s*(.*?)\s*$/,
+          );
+          if (!methodMatch) return;
+
+          const methodName = methodMatch[1];
+          const params = methodMatch[2];
+          const returnType = methodMatch[3];
+          const returnSuffix = returnType ? ` ${returnType}` : "";
+
+          if (!implementors.length) {
+            vscode.window.showInformationMessage(
+              `Method '${methodName}' added to interface ${interfaceName}. No implementations found.`,
+            );
+            return;
+          }
+
+          // 5. Append stub to every implementing file
+          const edit = new vscode.WorkspaceEdit();
+          const seenFiles = new Set<string>();
+          let firstImplUri: vscode.Uri | undefined;
+          let firstImplLastLine = 0;
+
+          for (const loc of implementors) {
+            const fileKey = loc.uri.toString();
+            if (seenFiles.has(fileKey)) continue;
+            seenFiles.add(fileKey);
+
+            const implDoc = await vscode.workspace.openTextDocument(loc.uri);
+
+            // Resolve struct name
+            let structName = "";
+            try {
+              const implSymbols = await vscode.commands.executeCommand<
+                vscode.DocumentSymbol[]
+              >("vscode.executeDocumentSymbolProvider", loc.uri);
+              if (implSymbols) {
+                const findAtLine = (
+                  syms: vscode.DocumentSymbol[],
+                  line: number,
+                ): vscode.DocumentSymbol | undefined => {
+                  for (const s of syms) {
+                    if (
+                      s.range.start.line <= line &&
+                      s.range.end.line >= line &&
+                      (s.kind === vscode.SymbolKind.Struct ||
+                        s.kind === vscode.SymbolKind.Class)
+                    ) {
+                      return s;
+                    }
+                    const child = findAtLine(s.children || [], line);
+                    if (child) return child;
+                  }
+                  return undefined;
+                };
+                const sym = findAtLine(implSymbols, loc.range.start.line);
+                if (sym) structName = sym.name;
+              }
+            } catch (_e) {
+              // ignore
+            }
+
+            if (!structName) {
+              const lineText = implDoc.lineAt(loc.range.start.line).text;
+              const m = lineText.match(/type\s+(\w+)\s+struct/);
+              if (m) structName = m[1];
+            }
+
+            if (!structName) continue;
+
+            const receiver = structName[0].toLowerCase();
+            const stub =
+              `\nfunc (${receiver} *${structName}) ${methodName}(${params})${returnSuffix} {\n` +
+              `\t// TODO: implement me\n` +
+              `\tpanic("implement me")\n` +
+              `}\n`;
+
+            const lastLine = implDoc.lineCount - 1;
+            const endOfFile = new vscode.Position(
+              lastLine,
+              implDoc.lineAt(lastLine).text.length,
+            );
+            edit.insert(loc.uri, endOfFile, stub);
+
+            if (!firstImplUri) {
+              firstImplUri = loc.uri;
+              firstImplLastLine = lastLine;
+            }
+          }
+
+          const success = await vscode.workspace.applyEdit(edit);
+          if (!success) {
+            vscode.window.showErrorMessage(
+              `Failed to add method '${methodName}' to implementations of ${interfaceName}`,
+            );
+            return;
+          }
+
+          vscode.window.showInformationMessage(
+            `Method '${methodName}' added to interface ${interfaceName} and ${seenFiles.size} implementation(s)`,
+          );
+
+          // 6. Navigate to the first implementation's new stub
+          if (firstImplUri) {
+            const firstDoc =
+              await vscode.workspace.openTextDocument(firstImplUri);
+            const firstEditor = await vscode.window.showTextDocument(firstDoc);
+            // Stub was appended — new last line is old lastLine + stub line count
+            const stubLines = 4; // blank + func + TODO + panic + }
+            const stubStart = firstImplLastLine + 2; // skip blank line
+            const targetPos = new vscode.Position(stubStart, 0);
+            firstEditor.revealRange(
+              new vscode.Range(targetPos, targetPos),
+              vscode.TextEditorRevealType.InCenter,
+            );
+            firstEditor.selection = new vscode.Selection(targetPos, targetPos);
+            // Suppress unused variable warning
+            void stubLines;
+          }
+        },
+      );
+
+      // Dispose listener if the extension is deactivated before it fires
+      context.subscriptions.push(selListener);
+    },
+  );
+
   // Register command to move symbol up
   const moveSymbolUpCommand = vscode.commands.registerCommand(
     "go-assistant.moveSymbolUp",
@@ -2485,40 +2615,59 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           const fieldMatch = fieldText.match(/^\s*(\w+)\s+(.+)/);
           if (!fieldMatch) continue;
           const fName = fieldMatch[1];
-          // Skip unexported fields
-          if (!/^[A-Z]/.test(fName)) continue;
           const fType = fieldMatch[2].replace(/`[^`]*`/g, "").trim();
-          fieldLines.push(`${indent}\t${fName}: ${goZeroValueForType(fType)},`);
+          const zeroVal = await resolveFieldZeroValue(defDoc, field, fType);
+          fieldLines.push(`${indent}\t${fName}: ${zeroVal},`);
         }
 
         if (fieldLines.length === 0) {
           vscode.window.showInformationMessage(
-            `No exported fields found in '${typeName}'`,
+            `No fields found in '${typeName}'`,
           );
           return;
         }
 
-        // Find and replace the struct literal on the current line
-        const literalRegex = new RegExp(
-          `(&?)${typeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{[^}]*\\}`,
-        );
-        const literalMatch = line.match(literalRegex);
-        if (!literalMatch || literalMatch.index === undefined) {
+        // Find the struct opener on position.line (e.g. "&User{" or "User{").
+        const esc = typeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const openerRegex = new RegExp(`(&?)${esc}\\s*\\{`);
+        const openerMatch = line.match(openerRegex);
+        if (!openerMatch || openerMatch.index === undefined) {
           vscode.window.showErrorMessage(
             "Could not locate struct literal on line",
           );
           return;
         }
 
-        const prefix = literalMatch[1]; // "&" or ""
-        const matchStart = literalMatch.index;
-        const matchEnd = matchStart + literalMatch[0].length;
+        const prefix = openerMatch[1]; // "&" or ""
+        const openerStart = openerMatch.index;
+
+        // Walk forward counting braces until we find the matching closing "}"
+        // so that multi-line literals (e.g. &User{\n}) are handled correctly.
+        let braceDepth = 0;
+        let closerLine = position.line;
+        let closerCol = line.length;
+        outer: for (let li = position.line; li < document.lineCount; li++) {
+          const lt = document.lineAt(li).text;
+          const startCol = li === position.line ? openerStart : 0;
+          for (let ci = startCol; ci < lt.length; ci++) {
+            if (lt[ci] === "{") braceDepth++;
+            else if (lt[ci] === "}") {
+              braceDepth--;
+              if (braceDepth === 0) {
+                closerLine = li;
+                closerCol = ci + 1;
+                break outer;
+              }
+            }
+          }
+        }
+
         const newText = `${prefix}${typeName}{\n${fieldLines.join("\n")}\n${indent}}`;
 
         const edit = new vscode.WorkspaceEdit();
         edit.replace(
           uri,
-          new vscode.Range(position.line, matchStart, position.line, matchEnd),
+          new vscode.Range(position.line, openerStart, closerLine, closerCol),
           newText,
         );
         await vscode.workspace.applyEdit(edit);
@@ -2654,6 +2803,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     renameParameterCommand,
     changeSignatureCommand,
     generateInterfaceStubCommand,
+    addMethodToInterfaceCommand,
     moveSymbolUpCommand,
     moveSymbolDownCommand,
     addVarTypeCommand,
@@ -3873,10 +4023,57 @@ function goZeroValueForType(typeName: string): string {
     t.startsWith("chan ") ||
     t.startsWith("func(") ||
     t === "interface{}" ||
-    t === "any"
+    t === "any" ||
+    t === "error" // error is always an interface
   ) {
     return "nil";
   }
-  // Named struct or other composite type – use zero struct literal
+  // Named type – caller should use resolveFieldZeroValue() for async interface detection
   return `${t}{}`;
+}
+
+/** Async wrapper: for named types, hovers the type position in the definition
+ *  document to check if gopls reports it as an interface.  If so → "nil".
+ *  Falls back to the synchronous goZeroValueForType result for everything else. */
+async function resolveFieldZeroValue(
+  defDoc: vscode.TextDocument,
+  field: vscode.DocumentSymbol,
+  fType: string,
+): Promise<string> {
+  const simple = goZeroValueForType(fType);
+  // Only need to check further when we fell through to the `T{}` fallback
+  if (!simple.endsWith("{}")) return simple;
+
+  // Strip a leading package qualifier so we can locate the bare type name in the line
+  const baseName = fType.includes(".") ? fType.split(".").pop()! : fType;
+
+  try {
+    const lineTxt = defDoc.lineAt(field.range.start.line).text;
+    // Find the type name starting after the field name / keyword
+    const searchFrom = field.selectionRange.end.character;
+    const col = lineTxt.indexOf(baseName, searchFrom);
+    if (col === -1) return simple;
+
+    const typePos = new vscode.Position(field.range.start.line, col);
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+      "vscode.executeHoverProvider",
+      defDoc.uri,
+      typePos,
+    );
+    if (hovers && hovers.length > 0) {
+      const hoverText = hovers
+        .flatMap((h) =>
+          h.contents.map((c) =>
+            typeof c === "string" ? c : (c as vscode.MarkdownString).value,
+          ),
+        )
+        .join("\n");
+      // gopls hover for an interface type contains "interface {" or "interface{"
+      if (/\binterface\s*\{/.test(hoverText)) return "nil";
+    }
+  } catch (_e) {
+    // hover failed – fall back to static result
+  }
+
+  return simple;
 }

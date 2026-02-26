@@ -20,93 +20,62 @@ export class GoInlineValuesProvider implements vscode.InlineValuesProvider {
 
     const stoppedLine = context.stoppedLocation.start.line;
 
-    // Provide inline values for variables in the current viewport
     for (let line = viewPort.start.line; line <= viewPort.end.line; line++) {
+      if (line === stoppedLine) continue;
+
       const lineText = document.lineAt(line).text;
+      const trimmed = lineText.trim();
 
-      // Skip if this is the line where execution is stopped
-      if (line === stoppedLine) {
-        continue;
-      }
+      // Skip for-range loops — the iteration variable is usually a struct and
+      // delve would render its full type path, making the display very noisy.
+      if (/\bfor\b.*\brange\b/.test(trimmed)) continue;
 
-      // Find variable declarations and usages
-      // Pattern: varName := value or var varName = value
-      const varDeclMatches = [
-        ...lineText.matchAll(/\b(\w+)\s*:=\s*([^\/\n]+)/g),
-        ...lineText.matchAll(/var\s+(\w+)\s*=\s*([^\/\n]+)/g),
+      // Collect variable names from short declarations and var statements.
+      const declRegex = /(?:^|\bis\s*)(?:var\s+(\w+)|([\w,\s]+)\s*:=)/g;
+      const shortDecls = [
+        ...lineText.matchAll(/(?:^|[^:])\b(\w+)(?:\s*,\s*(\w+))*\s*:=/g),
       ];
+      const varDecls = [...lineText.matchAll(/\bvar\s+(\w+)\b/g)];
 
-      for (const match of varDeclMatches) {
-        const varName = match[1];
-        const range = new vscode.Range(
-          line,
-          match.index!,
-          line,
-          match.index! + varName.length,
+      // Determine the right-hand side of the declaration to skip struct/composite
+      // literals and pointer-to-struct constructions like &Foo{ or []T{.
+      // These produce very long strings in the debugger output.
+      const rhsOfDecl = ((): string => {
+        const assignIdx = lineText.indexOf(":=");
+        if (assignIdx !== -1) return lineText.slice(assignIdx + 2).trimStart();
+        const varAssignIdx = lineText.indexOf("=");
+        if (varAssignIdx !== -1)
+          return lineText.slice(varAssignIdx + 1).trimStart();
+        return "";
+      })();
+
+      // Skip if RHS looks like a composite/struct literal or for-range.
+      const isVerboseRhs =
+        /^&?[A-Za-z_]\w*\s*\{/.test(rhsOfDecl) || // &Struct{ or Struct{
+        /^\[\]/.test(rhsOfDecl) || // slice literal
+        /^map\[/.test(rhsOfDecl); // map literal
+      if (isVerboseRhs) continue;
+
+      for (const match of [...shortDecls, ...varDecls]) {
+        // In short decls group 1 is the name; in var decls group 1 also.
+        const candidates = [match[1], match[2]].filter(
+          (n): n is string => !!n && /^[a-zA-Z_]\w*$/.test(n),
         );
-
-        // Use evaluatable expression to show the variable value
-        inlineValues.push(
-          new vscode.InlineValueEvaluatableExpression(range, varName),
-        );
-      }
-
-      // Find variable usages (simple identifier)
-      const usageMatches = lineText.matchAll(/\b([a-z]\w*)\b/g);
-      for (const match of usageMatches) {
-        const varName = match[1];
-
-        // Skip keywords and common function names
-        const skipWords = [
-          "if",
-          "else",
-          "for",
-          "range",
-          "func",
-          "return",
-          "var",
-          "const",
-          "type",
-          "struct",
-          "interface",
-          "package",
-          "import",
-          "defer",
-          "go",
-          "chan",
-          "select",
-          "case",
-          "default",
-          "break",
-          "continue",
-          "true",
-          "false",
-          "nil",
-          "make",
-          "new",
-          "len",
-          "cap",
-          "append",
-          "copy",
-          "delete",
-          "panic",
-          "recover",
-          "print",
-          "println",
-        ];
-
-        if (!skipWords.includes(varName)) {
-          const startPos = match.index || 0;
-          const range = new vscode.Range(
-            line,
-            startPos,
-            line,
-            startPos + varName.length,
-          );
-
-          // Show variable value during debugging
+        for (const varName of candidates) {
+          if (varName === "_") continue;
+          const nameStart = lineText.indexOf(varName, match.index ?? 0);
+          if (nameStart === -1) continue;
           inlineValues.push(
-            new vscode.InlineValueVariableLookup(range, varName, false),
+            new vscode.InlineValueVariableLookup(
+              new vscode.Range(
+                line,
+                nameStart,
+                line,
+                nameStart + varName.length,
+              ),
+              varName,
+              false,
+            ),
           );
         }
       }

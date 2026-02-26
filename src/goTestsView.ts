@@ -486,6 +486,10 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     // Append coverprofile after other flags
     if (coverageFile && this.activeFlags.has("coverprofile")) {
       parts.push(`-coverprofile="${coverageFile}"`);
+      // Coverage profiles are not generated for cached runs, so bypass the cache.
+      if (!this.activeFlags.has("count")) {
+        parts.push("-count=1");
+      }
     }
     return parts.join(" ");
   }
