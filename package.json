@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.1.9",
+  "version": "0.2.0",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -81,11 +81,6 @@
         "icon": "$(run-all)"
       },
       {
-        "command": "go-assistant.runAllTestsWithCoverage",
-        "title": "Run All Tests with Shared Coverage",
-        "icon": "$(run-all)"
-      },
-      {
         "command": "go-assistant.debugAllTests",
         "title": "Debug All Tests",
         "icon": "$(debug-alt)"
@@ -119,6 +114,25 @@
         "command": "go-assistant.runTest",
         "title": "Run Test",
         "icon": "$(run)"
+      },
+      {
+        "command": "go-assistant.runSubTestFromCode",
+        "title": "Run Sub-Test (Tab)"
+      },
+      {
+        "command": "go-assistant.runTestWithOptions",
+        "title": "Run Test...",
+        "icon": "$(run)"
+      },
+      {
+        "command": "go-assistant.selectProfile",
+        "title": "Profiling Mode",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "go-assistant.selectProfileActive",
+        "title": "Profiling Mode (Active)",
+        "icon": "$(record)"
       },
       {
         "command": "go-assistant.debugPackageTests",
@@ -180,6 +194,10 @@
       {
         "command": "go-assistant.addMethodToInterface",
         "title": "Go Assistant: Add Method to Interface and All Implementations"
+      },
+      {
+        "command": "go-assistant.implementInterface",
+        "title": "Go Assistant: Implement Interface"
       }
     ],
     "views": {
@@ -244,14 +262,24 @@
           "group": "navigation@4"
         },
         {
+          "command": "go-assistant.selectProfile",
+          "when": "view == goAssistantTests && !goAssistant.profileActive",
+          "group": "navigation@5"
+        },
+        {
+          "command": "go-assistant.selectProfileActive",
+          "when": "view == goAssistantTests && goAssistant.profileActive",
+          "group": "navigation@5"
+        },
+        {
           "command": "go-assistant.openCoverageHtml",
           "when": "view == goAssistantTests && goAssistant.coverageAvailable",
-          "group": "navigation@5"
+          "group": "navigation@6"
         },
         {
           "command": "go-assistant.resetTests",
           "when": "view == goAssistantTests",
-          "group": "navigation@6"
+          "group": "navigation@7"
         }
       ],
       "view/item/context": [
@@ -355,6 +383,11 @@
           "type": "boolean",
           "default": true,
           "description": "Mostra contagem de interfaces implementadas por tipos"
+        },
+        "goAssistant.codelens.implementInterface": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mostra botão 'implement interface' em structs para gerar stubs de métodos de qualquer interface (stdlib, dependências, projeto)"
         },
         "goAssistant.codelens.fields": {
           "type": "boolean",

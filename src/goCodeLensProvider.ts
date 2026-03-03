@@ -14,6 +14,7 @@ interface Config {
   methods: boolean;
   implementers: boolean;
   implementations: boolean;
+  implementInterface: boolean;
   fields: boolean;
   packageImports: boolean;
   largeProject: boolean;
@@ -45,6 +46,19 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
     this.referenceCache = {};
   }
 
+  /**
+   * Removes all entries that have passed their TTL.
+   * Called on save to prevent the cache growing without bound when files change.
+   */
+  private pruneExpiredCache(): void {
+    const now = Date.now();
+    for (const key of Object.keys(this.referenceCache)) {
+      if (now - this.referenceCache[key].timestamp >= this.CACHE_TTL) {
+        delete this.referenceCache[key];
+      }
+    }
+  }
+
   private getConfig(): Config {
     const config = vscode.workspace.getConfiguration("goAssistant.codelens");
     return {
@@ -53,6 +67,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
       methods: config.get<boolean>("methods", true),
       implementers: config.get<boolean>("implementers", true),
       implementations: config.get<boolean>("implementations", true),
+      implementInterface: config.get<boolean>("implementInterface", true),
       fields: config.get<boolean>("fields", false),
       packageImports: config.get<boolean>("packageImports", true),
       largeProject: config.get<boolean>("largeProject", false),
@@ -97,10 +112,8 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         }
       }
 
-      const symbols = await this.getDocumentSymbols(document);
-      const documentSymbols = await vscode.commands.executeCommand<
-        vscode.DocumentSymbol[]
-      >("vscode.executeDocumentSymbolProvider", document.uri);
+      const { symbols, rawSymbols: documentSymbols } =
+        await this.getDocumentSymbols(document);
 
       for (const symbol of symbols) {
         if (this.isStruct(symbol)) {
@@ -135,6 +148,15 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
             if (implLens) {
               codeLenses.push(implLens);
             }
+          }
+
+          // Implement Interface CodeLens
+          if (config.implementInterface) {
+            const implInterfaceLens = this.createImplementInterfaceLens(
+              document,
+              symbol,
+            );
+            codeLenses.push(implInterfaceLens);
           }
 
           // Move declaration CodeLens for structs (unified)
@@ -302,22 +324,24 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
   private async getDocumentSymbols(
     document: vscode.TextDocument,
-  ): Promise<GoSymbol[]> {
+  ): Promise<{ symbols: GoSymbol[]; rawSymbols: vscode.DocumentSymbol[] }> {
     const symbols: GoSymbol[] = [];
+    let rawSymbols: vscode.DocumentSymbol[] = [];
 
     try {
-      const documentSymbols = await vscode.commands.executeCommand<
+      const result = await vscode.commands.executeCommand<
         vscode.DocumentSymbol[]
       >("vscode.executeDocumentSymbolProvider", document.uri);
 
-      if (documentSymbols) {
-        this.flattenSymbols(documentSymbols, symbols);
+      if (result) {
+        rawSymbols = result;
+        this.flattenSymbols(result, symbols);
       }
     } catch (error) {
       console.error("Error getting document symbols:", error);
     }
 
-    return symbols;
+    return { symbols, rawSymbols };
   }
 
   private flattenSymbols(
@@ -509,6 +533,18 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
     }
   }
 
+  private createImplementInterfaceLens(
+    document: vscode.TextDocument,
+    symbol: GoSymbol,
+  ): vscode.CodeLens {
+    const range = new vscode.Range(symbol.line, 0, symbol.line, 0);
+    return new vscode.CodeLens(range, {
+      title: "implementar interface",
+      command: "go-assistant.implementInterface",
+      arguments: [document.uri, symbol.name, symbol.range.end.line],
+    });
+  }
+
   private async createImplementationsLens(
     document: vscode.TextDocument,
     symbol: GoSymbol,
@@ -581,10 +617,6 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         position,
       );
 
-      console.log(
-        `findReferences para ${symbolName} na posição ${position.line}:${position.character}: ${locations?.length || 0} locations`,
-      );
-
       // Filter out the definition itself (only keep actual references)
       const filtered =
         locations?.filter((loc) => {
@@ -596,12 +628,9 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
           );
         }) || [];
 
-      console.log(
-        `Filtered references for ${symbolName}: ${filtered.length} (was ${locations?.length || 0})`,
-      );
-
       // Cache result if large project mode is enabled
       if (useLargeProjectMode && filtered.length > 0) {
+        this.pruneExpiredCache();
         this.referenceCache[cacheKey] = {
           locations: filtered,
           timestamp: Date.now(),
@@ -922,39 +951,201 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
       // Match ALL test functions: TestXxx, BenchmarkXxx, ExampleXxx
       const testFuncRegex =
         /func\s+((?:Test|Benchmark|Example)[A-Z]\w*)\s*\(\s*(?:t\s+\*testing\.T|b\s+\*testing\.B|)\s*\)/g;
-      let testMatch;
+      let testMatch: RegExpExecArray | null;
 
       while ((testMatch = testFuncRegex.exec(text)) !== null) {
         const testName = testMatch[1];
-        const testStartIndex = testMatch.index;
-        const testLine = document.positionAt(testStartIndex).line;
-        const range = new vscode.Range(testLine, 0, testLine, 0);
+        const testLine = document.positionAt(testMatch.index).line;
 
-        // ▶ Run – uses our command so the result is reflected in the Tests tab
+        // ▶ Run button on the test function declaration line
         lenses.push(
-          new vscode.CodeLens(range, {
+          new vscode.CodeLens(new vscode.Range(testLine, 0, testLine, 0), {
             title: "▶ Run",
-            command: "go-assistant.runTestFromCode",
-            tooltip: "Run test and update Tests tab",
+            command: "go-assistant.runTestWithOptions",
+            tooltip: "Run, Debug or Profile this test",
             arguments: [{ testName, filePath }],
           }),
         );
 
-        // ▶ Debug – keep using go.debug.cursor from the official Go extension
-        lenses.push(
-          new vscode.CodeLens(range, {
-            title: "▶ Debug",
-            command: "go.debug.cursor",
-            tooltip: "Debug this test",
-            arguments: [{ functionName: testName }],
-          }),
+        // Extract function body with brace counting
+        const braceStart = text.indexOf(
+          "{",
+          testMatch.index + testMatch[0].length,
         );
+        if (braceStart === -1) {continue;}
+
+        let depth = 1,
+          pos = braceStart + 1;
+        while (pos < text.length && depth > 0) {
+          if (text[pos] === "{") {depth++;}
+          else if (text[pos] === "}") {depth--;}
+          pos++;
+        }
+        const bodyText = text.slice(braceStart + 1, pos - 1);
+        const bodyOffset = braceStart + 1;
+
+        // Detect table-driven by finding t.Run(loopVar.fieldName, ...) pattern.
+        // This is exactly how GoLand detects it — from the t.Run call itself,
+        // not by hardcoding a "name" field assumption.
+        const tRunMatch = bodyText.match(/\b(?:t|b)\.Run\(\s*(\w+)\.(\w+)\s*,/);
+        if (!tRunMatch) {continue;} // not table-driven
+
+        const loopVar = tRunMatch[1]; // e.g. "tt" or "tc"
+        const nameField = tRunMatch[2]; // e.g. "name" (or whatever field the user chose)
+
+        // Find the range variable: for _, loopVar := range rangeVar
+        const rangeRe = new RegExp(
+          `for\\s+(?:[\\w]+\\s*,\\s*)?${loopVar}\\s*:=\\s*range\\s+(\\w+)`,
+        );
+        const rangeMatch = bodyText.match(rangeRe);
+
+        // Find the VALUES block that holds the test cases
+        let caseSearchText = bodyText;
+        let caseSearchOffset = bodyOffset;
+
+        if (rangeMatch?.[1]) {
+          const rangeVar = rangeMatch[1];
+          // Find definition: rangeVar := ... or var rangeVar = ...
+          const defRe = new RegExp(`(?:var\\s+)?\\b${rangeVar}\\b\\s*:?=\\s*`);
+          const defMatch = defRe.exec(bodyText);
+          if (defMatch) {
+            const valuesBlock = this.findValuesBlock(
+              bodyText,
+              defMatch.index + defMatch[0].length,
+              nameField,
+            );
+            if (valuesBlock) {
+              caseSearchText = valuesBlock.text;
+              caseSearchOffset = bodyOffset + valuesBlock.offset;
+            }
+          }
+        }
+
+        // Extract each top-level case entry and its name
+        const caseEntries = this.extractCaseEntries(
+          caseSearchText,
+          caseSearchOffset,
+          nameField,
+          document,
+        );
+
+        const usedLines = new Set<number>();
+        for (const entry of caseEntries) {
+          usedLines.add(entry.line);
+          lenses.push(
+            new vscode.CodeLens(
+              new vscode.Range(entry.line, 0, entry.line, 0),
+              {
+                title: "▶ Run",
+                command: "go-assistant.runSubTestFromCode",
+                tooltip: `Run / Debug / Profile: ${testName}/${entry.name}`,
+                arguments: [{ testName, subTestName: entry.name, filePath }],
+              },
+            ),
+          );
+        }
+
+        // Also handle map[string]...: "key": { ... } style table tests
+        const mapKeyRe = /"([^"\\]+)"\s*:\s*\{/g;
+        let mk: RegExpExecArray | null;
+        while ((mk = mapKeyRe.exec(caseSearchText)) !== null) {
+          const absOffset = caseSearchOffset + mk.index;
+          const caseLine = document.positionAt(absOffset).line;
+          if (usedLines.has(caseLine)) {continue;}
+          const caseName = mk[1];
+          lenses.push(
+            new vscode.CodeLens(new vscode.Range(caseLine, 0, caseLine, 0), {
+              title: "▶ Run",
+              command: "go-assistant.runSubTestFromCode",
+              tooltip: `Run / Debug / Profile: ${testName}/${caseName}`,
+              arguments: [{ testName, subTestName: caseName, filePath }],
+            }),
+          );
+        }
       }
     } catch (error) {
       console.error("Error creating test lenses:", error);
     }
 
     return lenses;
+  }
+
+  /**
+   * Find the VALUES block `{ cases... }` (not a type definition block).
+   * Scans forward from `fromIndex`, skipping type-definition `{...}` blocks,
+   * until it finds one whose content contains `nameField: "..."` at depth 1.
+   */
+  private findValuesBlock(
+    text: string,
+    fromIndex: number,
+    nameField: string,
+  ): { text: string; offset: number } | null {
+    const nameRe = new RegExp(`\\b${nameField}\\s*:\\s*"`);
+    let i = fromIndex;
+
+    while (i < text.length) {
+      if (text[i] === "{") {
+        // Measure this block
+        let d = 1,
+          j = i + 1;
+        while (j < text.length && d > 0) {
+          if (text[j] === "{") {d++;}
+          else if (text[j] === "}") {d--;}
+          j++;
+        }
+        const blockContent = text.slice(i + 1, j - 1);
+        if (nameRe.test(blockContent)) {
+          // This block directly contains cases with nameField — it's the values block
+          return { text: blockContent, offset: i + 1 };
+        }
+        // Skip this block (it's a type definition: struct{...} or map[K]struct{...})
+        i = j;
+        continue;
+      }
+      i++;
+    }
+    return null;
+  }
+
+  /**
+   * Walk `valuesText` at depth 0 collecting top-level `{ ... }` entries.
+   * For each entry, if it contains `nameField: "value"` at any depth, add it.
+   * The lens is placed on the line of the opening `{` of each case entry.
+   */
+  private extractCaseEntries(
+    valuesText: string,
+    valuesOffset: number,
+    nameField: string,
+    document: vscode.TextDocument,
+  ): Array<{ name: string; line: number }> {
+    const entries: Array<{ name: string; line: number }> = [];
+    const nameRe = new RegExp(`\\b${nameField}\\s*:\\s*"([^"\\\\]+)"`);
+    let depth = 0;
+    let caseStart = -1;
+
+    for (let i = 0; i < valuesText.length; i++) {
+      const c = valuesText[i];
+      if (c === "{") {
+        if (depth === 0) {caseStart = i;}
+        depth++;
+      } else if (c === "}") {
+        depth--;
+        if (depth === 0 && caseStart !== -1) {
+          const caseContent = valuesText.slice(caseStart + 1, i);
+          const nfMatch = nameRe.exec(caseContent);
+          if (nfMatch) {
+            const absOffset = valuesOffset + caseStart;
+            entries.push({
+              name: nfMatch[1],
+              line: document.positionAt(absOffset).line,
+            });
+          }
+          caseStart = -1;
+        }
+      }
+    }
+
+    return entries;
   }
 
   private async createPackageImportsLens(

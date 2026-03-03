@@ -1,10 +1,14 @@
+import * as fs from "fs";
 import * as os from "os";
+import * as path from "path";
+import { exec, execFile } from "child_process";
 import * as vscode from "vscode";
 import { GoCodeActionProvider } from "./goCodeActionProvider";
 import { GoCodeLensProvider } from "./goCodeLensProvider";
 import { GoCoverageDecorator } from "./goCoverageDecorator";
 import { GoDiagnosticsProvider } from "./goDiagnosticsProvider";
 import { GoFileMoveHelper } from "./goFileMoveHelper";
+import { GoImplementInterfaceProvider } from "./goImplementInterfaceProvider";
 import { GoInlayHintsProvider } from "./goInlayHintsProvider";
 import { GoInlineValuesProvider } from "./goInlineValuesProvider";
 import { findGoModForWorkspace, getGoModuleRoot } from "./goModFinder";
@@ -13,6 +17,8 @@ import { GoReferencesViewProvider, SymbolInfo } from "./goReferencesView";
 import {
   AVAILABLE_TEST_FLAGS,
   GoTestsViewProvider,
+  PROFILING_MODES,
+  ProfilingMode,
   TestRunEntry,
 } from "./goTestsView";
 
@@ -32,13 +38,13 @@ function detectTestStatus(
   testName: string,
 ): "pass" | "fail" | "unknown" {
   const esc = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (new RegExp(`--- PASS: ${esc}\\b`, "m").test(output)) return "pass";
-  if (new RegExp(`--- FAIL: ${esc}\\b`, "m").test(output)) return "fail";
+  if (new RegExp(`--- PASS: ${esc}\\b`, "m").test(output)) {return "pass";}
+  if (new RegExp(`--- FAIL: ${esc}\\b`, "m").test(output)) {return "fail";}
   // No individual line found – check if the whole package passed.
   // `ok  \t<pkg>` (with spaces/tab) appears when every test in the package
   // passed, including after a cached run.  If the package passed and this
   // specific test didn't fail, it must have passed too.
-  if (/^ok[ \t]/m.test(output)) return "pass";
+  if (/^ok[ \t]/m.test(output)) {return "pass";}
   return "unknown";
 }
 
@@ -208,6 +214,17 @@ export function activate(context: vscode.ExtensionContext) {
     showCollapseAll: true,
   });
 
+  // Restore panel subtitle from persisted profile (survives extension restarts)
+  const restoredProfile = testsViewProvider.getActiveProfile();
+  if (restoredProfile) {
+    const restoredProfMode = PROFILING_MODES.find(
+      (p) => p.id === restoredProfile,
+    );
+    if (restoredProfMode) {
+      testsView.description = `Profile: ${restoredProfMode.label}`;
+    }
+  }
+
   context.subscriptions.push(testsView);
 
   // Discover tests on activation
@@ -290,6 +307,21 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Initialize File Move Helper
   const fileMoveHelper = new GoFileMoveHelper();
+
+  // Initialize Implement Interface provider
+  const implementInterfaceProvider = new GoImplementInterfaceProvider();
+
+  // Register command to implement an interface on a struct
+  const implementInterfaceCommand = vscode.commands.registerCommand(
+    "go-assistant.implementInterface",
+    async (uri: vscode.Uri, structName: string, structEndLine: number) => {
+      await implementInterfaceProvider.implementInterface(
+        uri,
+        structName,
+        structEndLine,
+      );
+    },
+  );
 
   // Register command to show references
   const showReferencesCommand = vscode.commands.registerCommand(
@@ -477,72 +509,110 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      testsViewProvider.setLastRunSpec({
-        type: "all",
-        label: "all tests",
-        workspacePath,
-      });
+      // Use module roots discovered by the tests view (same as "Run All Packages")
+      // to ensure tests are run from the correct directory (where go.mod lives).
+      const modules = testsViewProvider.getModules();
+      const roots: string[] =
+        modules.length > 0
+          ? [...new Set(modules.map((m) => m.moduleRoot))]
+          : [workspacePath];
 
-      const terminal = vscode.window.createTerminal({
-        name: "Go Tests",
-        cwd: workspacePath,
-      });
-      terminal.show();
+      for (const root of roots) {
+        testsViewProvider.setLastRunSpec({
+          type: "all",
+          label: "all tests",
+          workspacePath: root,
+        });
 
-      const { exec } = require("child_process");
-      const coverageFile = coverageFilePath(workspacePath);
-      const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
-
-      exec(
-        `go test ${extraFlags} ./...`,
-        { cwd: workspacePath },
-        (error: any, stdout: string, stderr: string) => {
-          const output = stdout + stderr;
-          const historyEntries: TestRunEntry[] = [];
-          // Update all known tests
-          for (const pkg of testsViewProvider.getPackages()) {
+        // Mark all tests in this root's modules as running
+        for (const mod of modules) {
+          if (mod.moduleRoot !== root) {continue;}
+          for (const pkg of mod.packages) {
             for (const file of pkg.files) {
               for (const test of file.tests) {
-                const duration = parseTestDuration(output, test.name);
-                const status = detectTestStatus(output, test.name);
                 testsViewProvider.updateTestStatus(
                   test.name,
                   pkg.packagePath,
-                  status,
-                  duration,
+                  "running",
                 );
-                historyEntries.push({
-                  testName: test.name,
-                  packagePath: pkg.packagePath,
-                  file: test.file,
-                  status: status === "unknown" ? "unknown" : status,
-                  duration,
-                });
               }
             }
           }
+        }
 
-          testsViewProvider.addToHistory("all tests", historyEntries);
+        const terminal = vscode.window.createTerminal({
+          name: "Go Tests",
+          cwd: root,
+        });
+        terminal.show();
 
-          // Discover subtests from output
-          testsViewProvider.updateSubTestsFromOutput(output);
+        const coverageFile = coverageFilePath(root);
+        // Profile flags are incompatible with multi-package runs (./...).
+        // Profiling is only applied when running a single package, file or test.
+        const extraFlags = testsViewProvider.buildExtraFlags(
+          false,
+          coverageFile,
+        );
 
-          setTimeout(() => {
-            coverageDecorator
-              .loadCoverageFromFile(coverageFile)
-              .then((loaded) => {
-                if (loaded) {
-                  coverageDecorator.applyDecorationsToAllEditors();
-                  vscode.window.showInformationMessage(
-                    "Coverage applied to all files",
+        exec(
+          `go test ${extraFlags} ./...`,
+          { cwd: root },
+          (error: any, stdout: string, stderr: string) => {
+            const output = stdout + stderr;
+            const historyEntries: TestRunEntry[] = [];
+            // Update all known tests belonging to this root
+            const rootModules =
+              modules.length > 0
+                ? modules.filter((m) => m.moduleRoot === root)
+                : [];
+            const allPkgs =
+              rootModules.length > 0
+                ? rootModules.flatMap((m) => m.packages)
+                : testsViewProvider.getPackages();
+            for (const pkg of allPkgs) {
+              for (const file of pkg.files) {
+                for (const test of file.tests) {
+                  const duration = parseTestDuration(output, test.name);
+                  const status = detectTestStatus(output, test.name);
+                  testsViewProvider.updateTestStatus(
+                    test.name,
+                    pkg.packagePath,
+                    status,
+                    duration,
                   );
+                  historyEntries.push({
+                    testName: test.name,
+                    packagePath: pkg.packagePath,
+                    file: test.file,
+                    status: status === "unknown" ? "unknown" : status,
+                    duration,
+                  });
                 }
-              });
-          }, 500);
-        },
-      );
+              }
+            }
 
-      sendCmd(terminal, workspacePath, `go test ${extraFlags} ./...`);
+            testsViewProvider.addToHistory("all tests", historyEntries);
+
+            // Discover subtests from output
+            testsViewProvider.updateSubTestsFromOutput(output);
+
+            setTimeout(() => {
+              coverageDecorator
+                .loadCoverageFromFile(coverageFile)
+                .then((loaded) => {
+                  if (loaded) {
+                    coverageDecorator.applyDecorationsToAllEditors();
+                    vscode.window.showInformationMessage(
+                      "Coverage applied to all files",
+                    );
+                  }
+                });
+            }, 500);
+          },
+        );
+
+        sendCmd(terminal, root, `go test ${extraFlags} ./...`);
+      }
     },
   );
 
@@ -588,12 +658,12 @@ export function activate(context: vscode.ExtensionContext) {
         placeHolder: "Mark flags to apply to all test runs",
       });
 
-      if (!selected) return;
+      if (!selected) {return;}
 
       const newValues: Record<string, string> = { ...currentValues };
 
       for (const f of AVAILABLE_TEST_FLAGS) {
-        if (!f.promptForValue) continue;
+        if (!f.promptForValue) {continue;}
         const isSelected = (selected as FlagPickItem[]).some(
           (s) => s.id === f.id,
         );
@@ -611,7 +681,7 @@ export function activate(context: vscode.ExtensionContext) {
             const idx = (selected as FlagPickItem[]).findIndex(
               (s) => s.id === f.id,
             );
-            if (idx !== -1) (selected as FlagPickItem[]).splice(idx, 1);
+            if (idx !== -1) {(selected as FlagPickItem[]).splice(idx, 1);}
           }
         } else {
           delete newValues[f.id];
@@ -624,7 +694,7 @@ export function activate(context: vscode.ExtensionContext) {
       const summary = newIds
         .map((id) => {
           const f = AVAILABLE_TEST_FLAGS.find((x) => x.id === id)!;
-          if (f.external) return f.label; // e.g. "Coverage Profile (save to file)"
+          if (f.external) {return f.label;} // e.g. "Coverage Profile (save to file)"
           return f.promptForValue && newValues[id]
             ? `${f.flag}="${newValues[id]}"`
             : f.flag;
@@ -675,8 +745,9 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      const { exec } = require("child_process");
       const coverageFile = coverageFilePath(moduleRoot);
+      // Profile flags are incompatible with multi-package runs (./...).
+      // Profiling is only applied when running a single package, file or test.
       const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
 
       exec(
@@ -793,12 +864,12 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      const { exec } = require("child_process");
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
+      const profileArgs = getProfileArgs(item.packageInfo.packageName);
 
       exec(
-        `go test ${extraFlags}`,
+        `go test ${extraFlags}${profileArgs ? ` ${profileArgs.flag}` : ""}`,
         { cwd: packagePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
@@ -860,10 +931,21 @@ export function activate(context: vscode.ExtensionContext) {
                 }
               });
           }, 500);
+
+          // Profile file is now fully written — safe to offer pprof
+          if (profileArgs)
+            {showPprofNotification(
+              item.packageInfo.packageName,
+              packagePath,
+              profileArgs.file,
+              profileArgs.mode,
+            );}
         },
       );
 
-      sendCmd(terminal, packagePath, `go test ${extraFlags}`);
+      // When profiling: exec() above is the authoritative run (writes the profile).
+      // Only use the terminal for the normal (non-profiled) flow.
+      if (!profileArgs) {sendCmd(terminal, packagePath, `go test ${extraFlags}`);}
     },
   );
 
@@ -877,7 +959,6 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const packagePath = item.fileInfo.packagePath;
-      const path = require("path");
       const fileName = path.basename(item.fileInfo.file);
       const testPattern = `^(${item.fileInfo.tests.map((t: any) => t.name).join("|")})$`;
 
@@ -900,12 +981,12 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      const { exec } = require("child_process");
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
+      const profileArgs = getProfileArgs(fileName);
 
       exec(
-        `go test ${extraFlags} -run "${testPattern}"`,
+        `go test ${extraFlags}${profileArgs ? ` ${profileArgs.flag}` : ""} -run "${testPattern}"`,
         { cwd: packagePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
@@ -962,16 +1043,122 @@ export function activate(context: vscode.ExtensionContext) {
                 }
               });
           }, 500);
+
+          // Profile file is now fully written — safe to offer pprof
+          if (profileArgs)
+            {showPprofNotification(
+              fileName,
+              packagePath,
+              profileArgs.file,
+              profileArgs.mode,
+            );}
         },
       );
 
-      sendCmd(
-        terminal,
-        packagePath,
-        `go test ${extraFlags} -run "${testPattern}"`,
-      );
+      // When profiling: exec() above is the authoritative run (writes the profile).
+      // Only use the terminal for the normal (non-profiled) flow.
+      if (!profileArgs)
+        {sendCmd(
+          terminal,
+          packagePath,
+          `go test ${extraFlags} -run "${testPattern}"`,
+        );}
     },
   );
+
+  // Returns profile flag + file path when a profile is active, undefined otherwise.
+  // Used by all run commands so profiling is applied regardless of how tests are invoked.
+  const getProfileArgs = (
+    displayName: string,
+  ):
+    | { flag: string; file: string; mode: (typeof PROFILING_MODES)[0] }
+    | undefined => {
+    const activeProfile = testsViewProvider.getActiveProfile();
+    const mode = PROFILING_MODES.find((p) => p.id === activeProfile);
+    if (!mode) {return undefined;}
+    const safeName = displayName.replace(/[^a-zA-Z0-9]/g, "_");
+    const file = path.join(
+      os.tmpdir(),
+      `go-assistant-${safeName}-${mode.id}.prof`,
+    );
+    return { flag: `${mode.flag}="${file}"`, file, mode };
+  };
+
+  // Shows the pprof "open?" notification immediately after a profiled run finishes.
+  // Must be called from inside an exec() callback so the profile file is fully written.
+  const showPprofNotification = async (
+    displayName: string,
+    packagePath: string,
+    profileFile: string,
+    profileMode: (typeof PROFILING_MODES)[0],
+  ): Promise<void> => {
+    const answer = await vscode.window.showInformationMessage(
+      `$(pulse) ${profileMode.label} profile ready. Open pprof?`,
+      "Open pprof (web)",
+      "Open in terminal",
+      "Dismiss",
+    );
+    if (answer === "Open pprof (web)") {
+      const pprofTerminal = vscode.window.createTerminal({
+        name: `pprof ${profileMode.label} - ${displayName}`,
+        cwd: packagePath,
+      });
+      pprofTerminal.show();
+      sendCmd(
+        pprofTerminal,
+        packagePath,
+        `go tool pprof -http=:8080 "${profileFile}"`,
+      );
+      setTimeout(() => {
+        vscode.env.openExternal(vscode.Uri.parse("http://localhost:8080"));
+      }, 2500);
+    } else if (answer === "Open in terminal") {
+      const pprofTerminal = vscode.window.createTerminal({
+        name: `pprof ${profileMode.label} - ${displayName}`,
+        cwd: packagePath,
+      });
+      pprofTerminal.show();
+      sendCmd(pprofTerminal, packagePath, `go tool pprof "${profileFile}"`);
+    }
+  };
+
+  // Shared helper: runs go test with a profiling flag.
+  // Uses exec() so we know exactly when the process exits and the profile is fully written,
+  // then offers the pprof UI. Output is streamed to a dedicated OutputChannel.
+  const runWithProfile = async (
+    displayName: string,
+    runPattern: string,
+    packagePath: string,
+    profileMode: (typeof PROFILING_MODES)[0],
+  ): Promise<void> => {
+    const profileArgs = getProfileArgs(displayName)!;
+    const extraFlags = testsViewProvider.buildExtraFlags(true);
+    const cmd = `go test ${extraFlags} ${profileArgs.flag} -run "${runPattern}"`;
+
+    const channel = vscode.window.createOutputChannel(
+      `Go Profile — ${displayName}`,
+    );
+    channel.appendLine(`$ ${cmd}`);
+    channel.show(true /* preserveFocus */);
+
+    exec(
+      cmd,
+      { cwd: packagePath },
+      async (error: any, stdout: string, stderr: string) => {
+        const output = stdout + (stderr ? `\n${stderr}` : "");
+        channel.appendLine(output);
+        if (error && !stdout && !stderr) {
+          channel.appendLine(`exit: ${error.code ?? error.message}`);
+        }
+        await showPprofNotification(
+          displayName,
+          packagePath,
+          profileArgs.file,
+          profileMode,
+        );
+      },
+    );
+  };
 
   // Register command to run single test
   const runTestCommand = vscode.commands.registerCommand(
@@ -985,6 +1172,21 @@ export function activate(context: vscode.ExtensionContext) {
       const testName = item.testInfo.name;
       const packagePath = item.testInfo.packagePath;
       const filePath: string = item.testInfo.file;
+
+      // If a profiling mode is active, run with profile instead of the normal flow
+      const activeProfile = testsViewProvider.getActiveProfile();
+      const activeProfMode = PROFILING_MODES.find(
+        (p) => p.id === activeProfile,
+      );
+      if (activeProfMode) {
+        await runWithProfile(
+          testName,
+          `^${testName}$`,
+          packagePath,
+          activeProfMode,
+        );
+        return;
+      }
 
       // Track last run spec
       testsViewProvider.setLastRunSpec({
@@ -1003,8 +1205,6 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      const { exec } = require("child_process");
-      const path = require("path");
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
@@ -1091,7 +1291,6 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const path = require("path");
       const testName = args.testName;
       const packagePath = path.dirname(args.filePath);
 
@@ -1111,7 +1310,6 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      const { exec } = require("child_process");
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
@@ -1356,6 +1554,16 @@ export function activate(context: vscode.ExtensionContext) {
       // Convert spaces to underscores as go test does for sub-test names
       const runPattern = `^${parentName}/${fullName.slice(parentName.length + 1).replace(/ /g, "_")}$`;
 
+      // If a profiling mode is active, run with profile instead of the normal flow
+      const activeProfile = testsViewProvider.getActiveProfile();
+      const activeProfMode = PROFILING_MODES.find(
+        (p) => p.id === activeProfile,
+      );
+      if (activeProfMode) {
+        await runWithProfile(fullName, runPattern, packagePath, activeProfMode);
+        return;
+      }
+
       testsViewProvider.updateSubTestStatus(
         parentName,
         fullName,
@@ -1369,7 +1577,6 @@ export function activate(context: vscode.ExtensionContext) {
       });
       terminal.show();
 
-      const { exec } = require("child_process");
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
@@ -1442,9 +1649,6 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const fs = require("fs");
-      const path = require("path");
-      const { execFile } = require("child_process");
 
       // Use the most recently loaded .out file (any scope: all / package / file / test)
       const coverageFile =
@@ -1458,12 +1662,17 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const htmlFile = path.join(workspacePath, "coverage.html");
+      // Run 'go tool cover' from the module root so it can resolve package paths.
+      // Using the workspace root can cause "package X is not in std" errors when
+      // the go.mod lives in a subdirectory.
+      const moduleRoot =
+        testsViewProvider.getModules()[0]?.moduleRoot ?? workspacePath;
+      const htmlFile = path.join(moduleRoot, "coverage.html");
 
       execFile(
         "go",
         ["tool", "cover", `-html=${coverageFile}`, `-o=${htmlFile}`],
-        { cwd: workspacePath },
+        { cwd: moduleRoot },
         (error: any) => {
           if (error) {
             vscode.window.showErrorMessage(
@@ -2092,11 +2301,11 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
       let finalized = false;
       const selListener = vscode.window.onDidChangeTextEditorSelection(
         async (e) => {
-          if (finalized) return;
-          if (e.textEditor.document.uri.toString() !== uri.toString()) return;
+          if (finalized) {return;}
+          if (e.textEditor.document.uri.toString() !== uri.toString()) {return;}
 
           const currentLine = e.selections[0].active.line;
-          if (currentLine === insertedLine) return; // still editing
+          if (currentLine === insertedLine) {return;} // still editing
 
           finalized = true;
           selListener.dispose();
@@ -2104,13 +2313,13 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           // 4. Read back what the user typed
           const doc = e.textEditor.document;
           const methodLineText = doc.lineAt(insertedLine).text.trim();
-          if (!methodLineText) return; // line was deleted/left blank
+          if (!methodLineText) {return;} // line was deleted/left blank
 
           // Parse: methodName(params) returnType
           const methodMatch = methodLineText.match(
             /^(\w+)\(([^)]*)\)\s*(.*?)\s*$/,
           );
-          if (!methodMatch) return;
+          if (!methodMatch) {return;}
 
           const methodName = methodMatch[1];
           const params = methodMatch[2];
@@ -2132,7 +2341,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
 
           for (const loc of implementors) {
             const fileKey = loc.uri.toString();
-            if (seenFiles.has(fileKey)) continue;
+            if (seenFiles.has(fileKey)) {continue;}
             seenFiles.add(fileKey);
 
             const implDoc = await vscode.workspace.openTextDocument(loc.uri);
@@ -2158,12 +2367,12 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
                       return s;
                     }
                     const child = findAtLine(s.children || [], line);
-                    if (child) return child;
+                    if (child) {return child;}
                   }
                   return undefined;
                 };
                 const sym = findAtLine(implSymbols, loc.range.start.line);
-                if (sym) structName = sym.name;
+                if (sym) {structName = sym.name;}
               }
             } catch (_e) {
               // ignore
@@ -2172,10 +2381,10 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
             if (!structName) {
               const lineText = implDoc.lineAt(loc.range.start.line).text;
               const m = lineText.match(/type\s+(\w+)\s+struct/);
-              if (m) structName = m[1];
+              if (m) {structName = m[1];}
             }
 
-            if (!structName) continue;
+            if (!structName) {continue;}
 
             const receiver = structName[0].toLowerCase();
             const stub =
@@ -2420,7 +2629,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           placeHolder: "json, db, yaml, bson, form, env, validate ...",
           value: "json",
         });
-        if (!tagKey) return;
+        if (!tagKey) {return;}
 
         const tagValue = await vscode.window.showInputBox({
           prompt: `Tag value for '${tagKey}' on field '${fieldName}'`,
@@ -2431,7 +2640,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
               .get<string>("tagNamingCase", "camelCase")!,
           ),
         });
-        if (tagValue === undefined) return;
+        if (tagValue === undefined) {return;}
 
         const lineRange = document.lineAt(lineNumber).range;
         const existingTagsMatch = lineText.match(/^(.*?)\s*`([^`]*)`\s*$/);
@@ -2470,12 +2679,12 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           placeHolder: "json, db, yaml, bson, form, env, validate ...",
           value: "json",
         });
-        if (!tagKey) return;
+        if (!tagKey) {return;}
 
         const symbols = await vscode.commands.executeCommand<
           vscode.DocumentSymbol[]
         >("vscode.executeDocumentSymbolProvider", uri);
-        if (!symbols) return;
+        if (!symbols) {return;}
 
         const structSymbol = findSymbol(
           symbols,
@@ -2509,7 +2718,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           const fieldLine = document.lineAt(field.range.start.line).text;
           const fieldText = document.getText(field.range);
           const fieldMatch = fieldText.match(/^\s*(\w+)\s+/);
-          if (!fieldMatch) continue;
+          if (!fieldMatch) {continue;}
 
           const fName = fieldMatch[1];
           const tagValue = toTagName(fName, tagCasing);
@@ -2613,7 +2822,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
         for (const field of fields) {
           const fieldText = defDoc.getText(field.range);
           const fieldMatch = fieldText.match(/^\s*(\w+)\s+(.+)/);
-          if (!fieldMatch) continue;
+          if (!fieldMatch) {continue;}
           const fName = fieldMatch[1];
           const fType = fieldMatch[2].replace(/`[^`]*`/g, "").trim();
           const zeroVal = await resolveFieldZeroValue(defDoc, field, fType);
@@ -2650,7 +2859,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           const lt = document.lineAt(li).text;
           const startCol = li === position.line ? openerStart : 0;
           for (let ci = startCol; ci < lt.length; ci++) {
-            if (lt[ci] === "{") braceDepth++;
+            if (lt[ci] === "{") {braceDepth++;}
             else if (lt[ci] === "}") {
               braceDepth--;
               if (braceDepth === 0) {
@@ -2766,12 +2975,253 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     },
   );
 
+  // Command: show Run/Debug/Profile picker for a test function (code lens button)
+  const runTestWithOptionsCommand = vscode.commands.registerCommand(
+    "go-assistant.runTestWithOptions",
+    async (args: { testName: string; filePath: string }) => {
+      if (!args?.testName || !args?.filePath) {
+        vscode.window.showErrorMessage("Invalid test arguments");
+        return;
+      }
+
+      const testName = args.testName;
+      const packagePath = path.dirname(args.filePath);
+      const activeProfile = testsViewProvider.getActiveProfile();
+      const activeProfMode = PROFILING_MODES.find(
+        (p) => p.id === activeProfile,
+      );
+
+      type OptionItem = vscode.QuickPickItem & { action: string };
+
+      const profileItems: OptionItem[] = PROFILING_MODES.map((p) => ({
+        label: `${p.icon} Profile: ${p.label}`,
+        description: p.description,
+        picked: activeProfile === p.id,
+        action: p.id,
+      }));
+
+      const runLabel = activeProfMode
+        ? `$(run) Run Test  ·  ${activeProfMode.icon} ${activeProfMode.label} profile active`
+        : "$(run) Run Test";
+
+      const items: OptionItem[] = [
+        {
+          label: runLabel,
+          description: "Run and update Tests panel",
+          action: "run",
+        },
+        {
+          label: "$(debug-alt) Debug Test",
+          description: "Launch debugger",
+          action: "debug",
+        },
+        { label: "", kind: vscode.QuickPickItemKind.Separator, action: "" },
+        ...profileItems,
+      ];
+
+      const selected = (await vscode.window.showQuickPick(items, {
+        title: testName,
+        placeHolder: "Select action",
+      })) as OptionItem | undefined;
+
+      if (!selected || !selected.action) {return;}
+
+      if (selected.action === "run") {
+        // If an active profile is set, run with profiling automatically
+        if (activeProfMode) {
+          await runWithProfile(
+            testName,
+            `^${testName}$`,
+            packagePath,
+            activeProfMode,
+          );
+        } else {
+          vscode.commands.executeCommand("go-assistant.runTestFromCode", {
+            testName,
+            filePath: args.filePath,
+          });
+        }
+        return;
+      }
+
+      if (selected.action === "debug") {
+        await vscode.debug.startDebugging(undefined, {
+          type: "go",
+          name: `Debug Test - ${testName}`,
+          request: "launch",
+          mode: "test",
+          program: packagePath,
+          args: ["-test.run", `^${testName}$`],
+        });
+        return;
+      }
+
+      // One-time profile choice (ignores activeProfile)
+      const profileMode = PROFILING_MODES.find((p) => p.id === selected.action);
+      if (!profileMode) {return;}
+      await runWithProfile(testName, `^${testName}$`, packagePath, profileMode);
+    },
+  );
+
+  // Command: show Run/Debug/Profile picker for a single sub-test case
+  const runSubTestFromCodeCommand = vscode.commands.registerCommand(
+    "go-assistant.runSubTestFromCode",
+    async (args: {
+      testName: string;
+      subTestName: string;
+      filePath: string;
+    }) => {
+      if (!args?.testName || !args?.subTestName || !args?.filePath) {
+        vscode.window.showErrorMessage("Invalid sub-test arguments");
+        return;
+      }
+
+      const { testName, subTestName, filePath } = args;
+      const packagePath = path.dirname(filePath);
+      const runName = subTestName.replace(/ /g, "_");
+      const runPattern = `^${testName}/${runName}$`;
+      const activeProfile = testsViewProvider.getActiveProfile();
+      const activeProfMode = PROFILING_MODES.find(
+        (p) => p.id === activeProfile,
+      );
+
+      type OptionItem = vscode.QuickPickItem & { action: string };
+
+      const profileItems: OptionItem[] = PROFILING_MODES.map((p) => ({
+        label: `${p.icon} Profile: ${p.label}`,
+        description: p.description,
+        picked: activeProfile === p.id,
+        action: p.id,
+      }));
+
+      const runLabel = activeProfMode
+        ? `$(run) Run Sub-Test  ·  ${activeProfMode.icon} ${activeProfMode.label} profile active`
+        : "$(run) Run Sub-Test";
+
+      const items: OptionItem[] = [
+        {
+          label: runLabel,
+          description: "Run this specific test case",
+          action: "run",
+        },
+        {
+          label: "$(debug-alt) Debug Sub-Test",
+          description: "Launch debugger",
+          action: "debug",
+        },
+        { label: "", kind: vscode.QuickPickItemKind.Separator, action: "" },
+        ...profileItems,
+      ];
+
+      const selected = (await vscode.window.showQuickPick(items, {
+        title: `${testName} / ${subTestName}`,
+        placeHolder: "Select action",
+      })) as OptionItem | undefined;
+
+      if (!selected || !selected.action) {return;}
+
+      if (selected.action === "run") {
+        if (activeProfMode) {
+          await runWithProfile(
+            subTestName,
+            runPattern,
+            packagePath,
+            activeProfMode,
+          );
+        } else {
+          const extraFlags = testsViewProvider.buildExtraFlags(true);
+          const terminal = vscode.window.createTerminal({
+            name: `Go Test - ${subTestName}`,
+            cwd: packagePath,
+          });
+          terminal.show();
+          sendCmd(
+            terminal,
+            packagePath,
+            `go test ${extraFlags} -run "${runPattern}"`,
+          );
+        }
+        return;
+      }
+
+      if (selected.action === "debug") {
+        await vscode.debug.startDebugging(undefined, {
+          type: "go",
+          name: `Debug - ${testName}/${subTestName}`,
+          request: "launch",
+          mode: "test",
+          program: packagePath,
+          args: ["-test.run", runPattern],
+        });
+        return;
+      }
+
+      const profileMode = PROFILING_MODES.find((p) => p.id === selected.action);
+      if (!profileMode) {return;}
+      await runWithProfile(subTestName, runPattern, packagePath, profileMode);
+    },
+  );
+
+  // Command: select the active profiling mode shown in the Tests panel header
+  const selectProfileCommand = vscode.commands.registerCommand(
+    "go-assistant.selectProfile",
+    async () => {
+      const current = testsViewProvider.getActiveProfile();
+
+      type ProfileItem = vscode.QuickPickItem & {
+        value: ProfilingMode | undefined;
+      };
+
+      const items: ProfileItem[] = [
+        {
+          label: "$(circle-slash) None",
+          description: "No profiling — run tests normally",
+          value: undefined,
+          picked: current === undefined,
+        },
+        ...PROFILING_MODES.map((p) => ({
+          label: `${p.icon} ${p.label}`,
+          description: p.description,
+          value: p.id as ProfilingMode,
+          picked: current === p.id,
+        })),
+      ];
+
+      const selected = (await vscode.window.showQuickPick(items, {
+        title: "Profiling Mode",
+        placeHolder: "Select profiling mode applied to test runs",
+      })) as ProfileItem | undefined;
+
+      if (selected === undefined) {return;}
+
+      testsViewProvider.setActiveProfile(selected.value);
+
+      // Update the panel subtitle so the user always sees the active profile
+      const profMode = PROFILING_MODES.find((p) => p.id === selected.value);
+      testsView.description = profMode
+        ? `Profile: ${profMode.label}`
+        : undefined;
+
+      const msg = selected.value
+        ? `Profiling: ${profMode?.label ?? selected.value} active`
+        : "Profiling disabled";
+      vscode.window.showInformationMessage(msg);
+    },
+  );
+
+  // Alias shown in the panel header when a profile IS active (uses a distinct icon: $(record))
+  const selectProfileActiveCommand = vscode.commands.registerCommand(
+    "go-assistant.selectProfileActive",
+    () => vscode.commands.executeCommand("go-assistant.selectProfile"),
+  );
+
   context.subscriptions.push(
     codeLensDisposable,
     protoCodeLensDisposable,
     inlayHintsDisposable,
     codeActionDisposable,
     inlineValuesDisposable,
+    implementInterfaceCommand,
     showReferencesCommand,
     showImplementationsCommand,
     showImplementersCommand,
@@ -2818,757 +3268,11 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     fileMoveHelper,
     runMainCommand,
     debugMainCommand,
+    runTestWithOptionsCommand,
+    runSubTestFromCodeCommand,
+    selectProfileCommand,
+    selectProfileActiveCommand,
   );
-}
-
-// Helper interfaces and functions for implementing interfaces
-interface InterfaceMethod {
-  name: string;
-  signature: string;
-  params: string;
-  returns: string;
-}
-
-interface InterfaceInfo {
-  name: string;
-  package: string;
-  methods: InterfaceMethod[];
-  location?: vscode.Location;
-}
-
-async function findAvailableInterfaces(
-  document: vscode.TextDocument,
-): Promise<InterfaceInfo[]> {
-  const interfaces: InterfaceInfo[] = [];
-
-  try {
-    // Add common stdlib interfaces (io, fmt, http, context, encoding, database, etc.)
-    interfaces.push(
-      {
-        name: "io.Reader",
-        package: "io",
-        methods: [
-          {
-            name: "Read",
-            signature: "Read(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-        ],
-      },
-      {
-        name: "io.Writer",
-        package: "io",
-        methods: [
-          {
-            name: "Write",
-            signature: "Write(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-        ],
-      },
-      {
-        name: "io.Closer",
-        package: "io",
-        methods: [
-          {
-            name: "Close",
-            signature: "Close() error",
-            params: "",
-            returns: "error",
-          },
-        ],
-      },
-      {
-        name: "io.ReadWriter",
-        package: "io",
-        methods: [
-          {
-            name: "Read",
-            signature: "Read(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Write",
-            signature: "Write(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-        ],
-      },
-      {
-        name: "io.ReadCloser",
-        package: "io",
-        methods: [
-          {
-            name: "Read",
-            signature: "Read(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Close",
-            signature: "Close() error",
-            params: "",
-            returns: "error",
-          },
-        ],
-      },
-      {
-        name: "io.WriteCloser",
-        package: "io",
-        methods: [
-          {
-            name: "Write",
-            signature: "Write(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Close",
-            signature: "Close() error",
-            params: "",
-            returns: "error",
-          },
-        ],
-      },
-      {
-        name: "fmt.Stringer",
-        package: "fmt",
-        methods: [
-          {
-            name: "String",
-            signature: "String() string",
-            params: "",
-            returns: "string",
-          },
-        ],
-      },
-      {
-        name: "error",
-        package: "builtin",
-        methods: [
-          {
-            name: "Error",
-            signature: "Error() string",
-            params: "",
-            returns: "string",
-          },
-        ],
-      },
-      {
-        name: "http.Handler",
-        package: "net/http",
-        methods: [
-          {
-            name: "ServeHTTP",
-            signature: "ServeHTTP(w http.ResponseWriter, r *http.Request)",
-            params: "w http.ResponseWriter, r *http.Request",
-            returns: "",
-          },
-        ],
-      },
-      {
-        name: "context.Context",
-        package: "context",
-        methods: [
-          {
-            name: "Deadline",
-            signature: "Deadline() (deadline time.Time, ok bool)",
-            params: "",
-            returns: "(deadline time.Time, ok bool)",
-          },
-          {
-            name: "Done",
-            signature: "Done() <-chan struct{}",
-            params: "",
-            returns: "<-chan struct{}",
-          },
-          {
-            name: "Err",
-            signature: "Err() error",
-            params: "",
-            returns: "error",
-          },
-          {
-            name: "Value",
-            signature: "Value(key any) any",
-            params: "key any",
-            returns: "any",
-          },
-        ],
-      },
-      {
-        name: "json.Marshaler",
-        package: "encoding/json",
-        methods: [
-          {
-            name: "MarshalJSON",
-            signature: "MarshalJSON() ([]byte, error)",
-            params: "",
-            returns: "([]byte, error)",
-          },
-        ],
-      },
-      {
-        name: "json.Unmarshaler",
-        package: "encoding/json",
-        methods: [
-          {
-            name: "UnmarshalJSON",
-            signature: "UnmarshalJSON(data []byte) error",
-            params: "data []byte",
-            returns: "error",
-          },
-        ],
-      },
-      {
-        name: "sql.Scanner",
-        package: "database/sql",
-        methods: [
-          {
-            name: "Scan",
-            signature: "Scan(src any) error",
-            params: "src any",
-            returns: "error",
-          },
-        ],
-      },
-      {
-        name: "driver.Valuer",
-        package: "database/sql/driver",
-        methods: [
-          {
-            name: "Value",
-            signature: "Value() (driver.Value, error)",
-            params: "",
-            returns: "(driver.Value, error)",
-          },
-        ],
-      },
-      {
-        name: "io.Seeker",
-        package: "io",
-        methods: [
-          {
-            name: "Seek",
-            signature: "Seek(offset int64, whence int) (int64, error)",
-            params: "offset int64, whence int",
-            returns: "(int64, error)",
-          },
-        ],
-      },
-      {
-        name: "io.ReadSeeker",
-        package: "io",
-        methods: [
-          {
-            name: "Read",
-            signature: "Read(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Seek",
-            signature: "Seek(offset int64, whence int) (int64, error)",
-            params: "offset int64, whence int",
-            returns: "(int64, error)",
-          },
-        ],
-      },
-      {
-        name: "io.WriteSeeker",
-        package: "io",
-        methods: [
-          {
-            name: "Write",
-            signature: "Write(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Seek",
-            signature: "Seek(offset int64, whence int) (int64, error)",
-            params: "offset int64, whence int",
-            returns: "(int64, error)",
-          },
-        ],
-      },
-      {
-        name: "io.ReadWriteSeeker",
-        package: "io",
-        methods: [
-          {
-            name: "Read",
-            signature: "Read(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Write",
-            signature: "Write(p []byte) (n int, err error)",
-            params: "p []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Seek",
-            signature: "Seek(offset int64, whence int) (int64, error)",
-            params: "offset int64, whence int",
-            returns: "(int64, error)",
-          },
-        ],
-      },
-      {
-        name: "sort.Interface",
-        package: "sort",
-        methods: [
-          {
-            name: "Len",
-            signature: "Len() int",
-            params: "",
-            returns: "int",
-          },
-          {
-            name: "Less",
-            signature: "Less(i, j int) bool",
-            params: "i, j int",
-            returns: "bool",
-          },
-          {
-            name: "Swap",
-            signature: "Swap(i, j int)",
-            params: "i, j int",
-            returns: "",
-          },
-        ],
-      },
-      {
-        name: "heap.Interface",
-        package: "container/heap",
-        methods: [
-          {
-            name: "Len",
-            signature: "Len() int",
-            params: "",
-            returns: "int",
-          },
-          {
-            name: "Less",
-            signature: "Less(i, j int) bool",
-            params: "i, j int",
-            returns: "bool",
-          },
-          {
-            name: "Swap",
-            signature: "Swap(i, j int)",
-            params: "i, j int",
-            returns: "",
-          },
-          {
-            name: "Push",
-            signature: "Push(x any)",
-            params: "x any",
-            returns: "",
-          },
-          {
-            name: "Pop",
-            signature: "Pop() any",
-            params: "",
-            returns: "any",
-          },
-        ],
-      },
-      {
-        name: "fs.FS",
-        package: "io/fs",
-        methods: [
-          {
-            name: "Open",
-            signature: "Open(name string) (fs.File, error)",
-            params: "name string",
-            returns: "(fs.File, error)",
-          },
-        ],
-      },
-      {
-        name: "fs.File",
-        package: "io/fs",
-        methods: [
-          {
-            name: "Stat",
-            signature: "Stat() (fs.FileInfo, error)",
-            params: "",
-            returns: "(fs.FileInfo, error)",
-          },
-          {
-            name: "Read",
-            signature: "Read([]byte) (int, error)",
-            params: "[]byte",
-            returns: "(int, error)",
-          },
-          {
-            name: "Close",
-            signature: "Close() error",
-            params: "",
-            returns: "error",
-          },
-        ],
-      },
-      {
-        name: "fs.ReadDirFile",
-        package: "io/fs",
-        methods: [
-          {
-            name: "Stat",
-            signature: "Stat() (fs.FileInfo, error)",
-            params: "",
-            returns: "(fs.FileInfo, error)",
-          },
-          {
-            name: "Read",
-            signature: "Read([]byte) (int, error)",
-            params: "[]byte",
-            returns: "(int, error)",
-          },
-          {
-            name: "Close",
-            signature: "Close() error",
-            params: "",
-            returns: "error",
-          },
-          {
-            name: "ReadDir",
-            signature: "ReadDir(n int) ([]fs.DirEntry, error)",
-            params: "n int",
-            returns: "([]fs.DirEntry, error)",
-          },
-        ],
-      },
-      {
-        name: "http.ResponseWriter",
-        package: "net/http",
-        methods: [
-          {
-            name: "Header",
-            signature: "Header() http.Header",
-            params: "",
-            returns: "http.Header",
-          },
-          {
-            name: "Write",
-            signature: "Write([]byte) (int, error)",
-            params: "[]byte",
-            returns: "(int, error)",
-          },
-          {
-            name: "WriteHeader",
-            signature: "WriteHeader(statusCode int)",
-            params: "statusCode int",
-            returns: "",
-          },
-        ],
-      },
-      {
-        name: "http.RoundTripper",
-        package: "net/http",
-        methods: [
-          {
-            name: "RoundTrip",
-            signature: "RoundTrip(*http.Request) (*http.Response, error)",
-            params: "*http.Request",
-            returns: "(*http.Response, error)",
-          },
-        ],
-      },
-      {
-        name: "net.Conn",
-        package: "net",
-        methods: [
-          {
-            name: "Read",
-            signature: "Read(b []byte) (n int, err error)",
-            params: "b []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Write",
-            signature: "Write(b []byte) (n int, err error)",
-            params: "b []byte",
-            returns: "(n int, err error)",
-          },
-          {
-            name: "Close",
-            signature: "Close() error",
-            params: "",
-            returns: "error",
-          },
-          {
-            name: "LocalAddr",
-            signature: "LocalAddr() net.Addr",
-            params: "",
-            returns: "net.Addr",
-          },
-          {
-            name: "RemoteAddr",
-            signature: "RemoteAddr() net.Addr",
-            params: "",
-            returns: "net.Addr",
-          },
-          {
-            name: "SetDeadline",
-            signature: "SetDeadline(t time.Time) error",
-            params: "t time.Time",
-            returns: "error",
-          },
-          {
-            name: "SetReadDeadline",
-            signature: "SetReadDeadline(t time.Time) error",
-            params: "t time.Time",
-            returns: "error",
-          },
-          {
-            name: "SetWriteDeadline",
-            signature: "SetWriteDeadline(t time.Time) error",
-            params: "t time.Time",
-            returns: "error",
-          },
-        ],
-      },
-      {
-        name: "net.Listener",
-        package: "net",
-        methods: [
-          {
-            name: "Accept",
-            signature: "Accept() (net.Conn, error)",
-            params: "",
-            returns: "(net.Conn, error)",
-          },
-          {
-            name: "Close",
-            signature: "Close() error",
-            params: "",
-            returns: "error",
-          },
-          {
-            name: "Addr",
-            signature: "Addr() net.Addr",
-            params: "",
-            returns: "net.Addr",
-          },
-        ],
-      },
-    );
-
-    // Get all Go files in workspace (local project)
-    const goFiles = await vscode.workspace.findFiles("**/*.go", "**/vendor/**");
-
-    // Scan workspace interfaces
-    for (const file of goFiles) {
-      try {
-        const doc = await vscode.workspace.openTextDocument(file);
-        const symbols = await vscode.commands.executeCommand<
-          vscode.DocumentSymbol[]
-        >("vscode.executeDocumentSymbolProvider", doc.uri);
-
-        if (symbols) {
-          for (const symbol of symbols) {
-            if (symbol.kind === vscode.SymbolKind.Interface) {
-              const methods = await extractInterfaceMethods(doc, symbol);
-              const packageName = await getPackageNameFromDocument(doc);
-
-              interfaces.push({
-                name: symbol.name,
-                package: packageName || "unknown",
-                methods: methods,
-                location: new vscode.Location(file, symbol.range),
-              });
-            }
-          }
-        }
-      } catch (error) {
-        // Skip files that can't be processed
-      }
-    }
-
-    // Try to scan GOMODCACHE/GOPATH for installed packages interfaces
-    try {
-      const { execSync } = require("child_process");
-
-      // Get GOMODCACHE path
-      let goModCache: string | undefined;
-      try {
-        goModCache = execSync("go env GOMODCACHE", { encoding: "utf8" }).trim();
-      } catch (error) {
-        // Try GOPATH/pkg/mod as fallback
-        try {
-          const goPath = execSync("go env GOPATH", { encoding: "utf8" }).trim();
-          goModCache = `${goPath}/pkg/mod`;
-        } catch (e) {
-          // Ignore
-        }
-      }
-
-      if (goModCache && require("fs").existsSync(goModCache)) {
-        // Scan Go module cache for interfaces (limited to avoid performance issues)
-        // Focus on common packages: github.com, golang.org, google.golang.org
-        const modCachePattern = new vscode.RelativePattern(
-          goModCache,
-          "{github.com,golang.org,google.golang.org}/**/*.go",
-        );
-
-        const modFiles = await vscode.workspace.findFiles(
-          modCachePattern,
-          "{**/testdata/**,**/*_test.go,**/vendor/**}",
-          1000, // Limit to 1000 files to avoid performance issues
-        );
-
-        for (const file of modFiles) {
-          try {
-            const doc = await vscode.workspace.openTextDocument(file);
-            const symbols = await vscode.commands.executeCommand<
-              vscode.DocumentSymbol[]
-            >("vscode.executeDocumentSymbolProvider", doc.uri);
-
-            if (symbols) {
-              for (const symbol of symbols) {
-                if (symbol.kind === vscode.SymbolKind.Interface) {
-                  const methods = await extractInterfaceMethods(doc, symbol);
-                  const packageName = await getPackageNameFromDocument(doc);
-
-                  // Extract module path from file path for better package name
-                  const filePath = file.fsPath;
-                  const modMatch = filePath.match(
-                    /(github\.com|golang\.org|google\.golang\.org)\/[^\/]+\/[^\/]+/,
-                  );
-                  const fullPackage = modMatch
-                    ? `${modMatch[0]}/${packageName}`
-                    : packageName || "unknown";
-
-                  interfaces.push({
-                    name: symbol.name,
-                    package: fullPackage,
-                    methods: methods,
-                    location: new vscode.Location(file, symbol.range),
-                  });
-                }
-              }
-            }
-          } catch (error) {
-            // Skip files that can't be processed
-          }
-        }
-      }
-    } catch (error) {
-      // Silently fail if can't access GOMODCACHE
-      console.log("Could not scan GOMODCACHE for interfaces:", error);
-    }
-  } catch (error) {
-    console.error("Error finding interfaces:", error);
-  }
-
-  return interfaces;
-}
-
-async function extractInterfaceMethods(
-  document: vscode.TextDocument,
-  interfaceSymbol: vscode.DocumentSymbol,
-): Promise<InterfaceMethod[]> {
-  const methods: InterfaceMethod[] = [];
-
-  try {
-    // Get interface body text
-    const interfaceText = document.getText(interfaceSymbol.range);
-
-    // Parse method signatures from interface
-    const methodRegex = /^\s*(\w+)\s*\(([^)]*)\)\s*(.*)$/gm;
-    let match;
-
-    while ((match = methodRegex.exec(interfaceText)) !== null) {
-      const methodName = match[1];
-      const params = match[2].trim();
-      const returns = match[3].trim();
-
-      // Skip if it's the interface declaration itself
-      if (methodName === "interface" || methodName === "type") {
-        continue;
-      }
-
-      methods.push({
-        name: methodName,
-        signature: `${methodName}(${params}) ${returns}`,
-        params: params,
-        returns: returns,
-      });
-    }
-  } catch (error) {
-    console.error("Error extracting interface methods:", error);
-  }
-
-  return methods;
-}
-
-async function getPackageNameFromDocument(
-  document: vscode.TextDocument,
-): Promise<string | null> {
-  const text = document.getText();
-  const packageMatch = text.match(/^package\s+(\w+)/m);
-  return packageMatch ? packageMatch[1] : null;
-}
-
-async function implementInterfaceMethods(
-  document: vscode.TextDocument,
-  structSymbol: any,
-  interfaceInfo: InterfaceInfo,
-): Promise<void> {
-  try {
-    const editor = await vscode.window.showTextDocument(document);
-    const structName = structSymbol.name;
-
-    // Find the best insertion point (after the struct definition)
-    const structEndLine = structSymbol.range.end.line;
-    const insertPosition = new vscode.Position(structEndLine + 1, 0);
-
-    // Generate method stubs
-    const methodStubs: string[] = [];
-
-    for (const method of interfaceInfo.methods) {
-      const receiverName = structName.charAt(0).toLowerCase();
-      const stub = `
-func (${receiverName} *${structName}) ${method.signature} {
-\tpanic("TODO: implement ${interfaceInfo.name}.${method.name}")
-}`;
-      methodStubs.push(stub);
-    }
-
-    // Insert all method stubs
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(document.uri, insertPosition, methodStubs.join("\n"));
-
-    const success = await vscode.workspace.applyEdit(edit);
-
-    if (success) {
-      // Format the document
-      await vscode.commands.executeCommand(
-        "editor.action.formatDocument",
-        document.uri,
-      );
-
-      const methodCount = interfaceInfo.methods.length;
-      vscode.window.showInformationMessage(
-        `Implemented ${methodCount} method${methodCount === 1 ? "" : "s"} from ${interfaceInfo.name}`,
-      );
-    } else {
-      vscode.window.showErrorMessage(
-        `Failed to implement ${interfaceInfo.name}`,
-      );
-    }
-  } catch (error) {
-    console.error("Error implementing interface methods:", error);
-    vscode.window.showErrorMessage(`Error implementing interface: ${error}`);
-  }
 }
 
 // Helper function to move symbol to another file
@@ -3923,14 +3627,35 @@ async function swapSymbols(
   second: vscode.DocumentSymbol,
 ): Promise<void> {
   try {
-    const firstText = document.getText(first.range);
-    const secondText = document.getText(second.range);
+    // Use getCompleteDeclarationText so that keywords like `type`, `var`, `const`
+    // that appear on the line before the symbol range are included in the swap.
+    const firstDecl = getCompleteDeclarationText(document, first);
+    const secondDecl = getCompleteDeclarationText(document, second);
+
+    const firstText = firstDecl.text;
+    const secondText = secondDecl.text;
+
+    // Build the full ranges that cover the keyword line through the symbol end
+    const firstFullRange = new vscode.Range(
+      new vscode.Position(firstDecl.startLine, 0),
+      new vscode.Position(
+        first.range.end.line,
+        document.lineAt(first.range.end.line).text.length,
+      ),
+    );
+    const secondFullRange = new vscode.Range(
+      new vscode.Position(secondDecl.startLine, 0),
+      new vscode.Position(
+        second.range.end.line,
+        document.lineAt(second.range.end.line).text.length,
+      ),
+    );
 
     const edit = new vscode.WorkspaceEdit();
 
-    // Replace in reverse order to avoid offset issues
-    edit.replace(uri, second.range, firstText);
-    edit.replace(uri, first.range, secondText);
+    // Replace in reverse order (second first) to keep offsets valid
+    edit.replace(uri, secondFullRange, firstText);
+    edit.replace(uri, firstFullRange, secondText);
 
     const success = await vscode.workspace.applyEdit(edit);
 
@@ -4007,8 +3732,8 @@ export function deactivate() {}
  */
 function goZeroValueForType(typeName: string): string {
   const t = typeName.trim();
-  if (t === "string") return '""';
-  if (t === "bool") return "false";
+  if (t === "string") {return '""';}
+  if (t === "bool") {return "false";}
   if (
     /^(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|byte|rune|uintptr|float32|float64|complex64|complex128)$/.test(
       t,
@@ -4042,7 +3767,7 @@ async function resolveFieldZeroValue(
 ): Promise<string> {
   const simple = goZeroValueForType(fType);
   // Only need to check further when we fell through to the `T{}` fallback
-  if (!simple.endsWith("{}")) return simple;
+  if (!simple.endsWith("{}")) {return simple;}
 
   // Strip a leading package qualifier so we can locate the bare type name in the line
   const baseName = fType.includes(".") ? fType.split(".").pop()! : fType;
@@ -4052,7 +3777,7 @@ async function resolveFieldZeroValue(
     // Find the type name starting after the field name / keyword
     const searchFrom = field.selectionRange.end.character;
     const col = lineTxt.indexOf(baseName, searchFrom);
-    if (col === -1) return simple;
+    if (col === -1) {return simple;}
 
     const typePos = new vscode.Position(field.range.start.line, col);
     const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
@@ -4069,7 +3794,7 @@ async function resolveFieldZeroValue(
         )
         .join("\n");
       // gopls hover for an interface type contains "interface {" or "interface{"
-      if (/\binterface\s*\{/.test(hoverText)) return "nil";
+      if (/\binterface\s*\{/.test(hoverText)) {return "nil";}
     }
   } catch (_e) {
     // hover failed – fall back to static result

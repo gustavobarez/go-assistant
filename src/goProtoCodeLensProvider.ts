@@ -312,7 +312,7 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
         // not found
       }
     }
-    if (results.length > 0) return results;
+    if (results.length > 0) {return results;}
 
     // Workspace-wide search for both variants
     for (const pattern of [
@@ -339,7 +339,7 @@ export class GoProtoCodeLensProvider implements vscode.CodeLensProvider {
   ): Promise<vscode.Location | undefined> {
     for (const p of goFilePaths) {
       const loc = await this.findInGeneratedFile(p, searchString);
-      if (loc) return loc;
+      if (loc) {return loc;}
     }
     return undefined;
   }

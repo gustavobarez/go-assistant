@@ -160,6 +160,13 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       await this.createSyncReceiverNamesActions(document);
     actions.push(...syncReceiverActions);
 
+    // Handle error on bare function call
+    const handleErrorActions = await this.createHandleErrorActions(
+      document,
+      range,
+    );
+    actions.push(...handleErrorActions);
+
     // Run/debug main method
     actions.push(...this.createRunDebugMainActions(document, range));
 
@@ -1185,14 +1192,14 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       const l = document.lineAt(i).text;
       // Count braces going backwards (reverse direction)
       for (let c = l.length - 1; c >= 0; c--) {
-        if (l[c] === "}") braceCount++;
+        if (l[c] === "}") {braceCount++;}
         else if (l[c] === "{") {
           if (braceCount > 0) {
             braceCount--;
           } else {
             // This opening brace is the one we're inside
             const m = l.match(/type\s+(\w+)\s+struct\s*\{/);
-            if (m) return m[1];
+            if (m) {return m[1];}
             return undefined;
           }
         }
@@ -2564,18 +2571,18 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       cursorCol: number | null,
     ): { typeName: string; typeNameCol: number } | null => {
       const structLiteralMatch = lineText.match(/(&?)([A-Za-z_]\w*)\s*\{/);
-      if (!structLiteralMatch) return null;
+      if (!structLiteralMatch) {return null;}
 
       const typeName = structLiteralMatch[2];
-      if (goKeywords.has(typeName)) return null;
-      if (!/^[A-Z]/.test(typeName)) return null;
+      if (goKeywords.has(typeName)) {return null;}
+      if (!/^[A-Z]/.test(typeName)) {return null;}
 
       if (cursorCol !== null) {
         const literalStart = structLiteralMatch.index ?? 0;
         const closingBrace = lineText.indexOf("}", literalStart);
         const literalEnd =
           closingBrace >= 0 ? closingBrace + 1 : lineText.length;
-        if (cursorCol < literalStart || cursorCol > literalEnd) return null;
+        if (cursorCol < literalStart || cursorCol > literalEnd) {return null;}
       }
 
       const typeNameCol = lineText.indexOf(
@@ -2615,7 +2622,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       }
     }
 
-    if (!result) return actions;
+    if (!result) {return actions;}
 
     const { typeName, typeNameCol } = result;
 
@@ -2637,6 +2644,369 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     actions.push(fillAction);
 
     return actions;
+  }
+
+  // ─── Handle error on bare function call ────────────────────────────────────
+
+  /**
+   * When the cursor is on a line that contains a bare function/method call with no
+   * left-hand assignment and no error handling, offer to:
+   *   - Declare variables for every return value (names derived from types or named returns)
+   *   - Add `if err != nil { return }` when the last return type is `error`
+   *
+   * Example:
+   *   stream.Recv()          →  msg, err := stream.Recv()
+   *                              if err != nil {
+   *                                  return
+   *                              }
+   */
+  private async createHandleErrorActions(
+    document: vscode.TextDocument,
+    range: vscode.Range,
+  ): Promise<vscode.CodeAction[]> {
+    const actions: vscode.CodeAction[] = [];
+
+    try {
+      const line = document.lineAt(range.start.line).text;
+      const trimmed = line.trim();
+      const indent = line.match(/^(\s*)/)?.[1] ?? "";
+
+      const dbg = (msg: string) =>
+        console.log(
+          `[go-assistant] handleError L${range.start.line + 1}: ${msg}`,
+        );
+
+      // Must not already have a flow keyword or assignment
+      if (
+        /^\s*(var\s|return\b|if\b|for\b|switch\b|select\b|defer\b|go\b)/.test(
+          line,
+        )
+      ) {
+        dbg("skip: control flow keyword");
+        return actions;
+      }
+
+      // Must contain a call
+      if (!line.includes("(")) {
+        dbg("skip: no '('");
+        return actions;
+      }
+
+      // Check for existing assignment (:= or lone =), ignoring comparison operators
+      // We strip two-character operator sequences first so ==, !=, <=, >= etc. don't
+      // false-positive.  After stripping them :=  and lone = are what remain.
+      const lineNoStrings = line.replace(/"[^"]*"|`[^`]*`/g, "''");
+      const lineNoCompound = lineNoStrings.replace(
+        /[!<>=+\-*\/%&|^]=|<<=|>>=|>>>=|={2}/g,
+        "  ",
+      );
+      if (lineNoCompound.includes("=")) {
+        dbg(`skip: assignment found in: "${lineNoCompound}"`);
+        return actions;
+      }
+
+      // The trimmed line must look like a bare function/method call.
+      // We use a permissive regex — the key constraint is that there is no
+      // top-level operator or keyword before the call expression.
+      // Allows: pkg.Func(...)  s.m(...)  fn(nested())  fn(Struct{f:v})
+      if (!/^[\w.]+\s*\(/.test(trimmed) || !/\)\s*$/.test(trimmed)) {
+        dbg(`skip: not a bare call: "${trimmed}"`);
+        return actions;
+      }
+
+      // Reject interface method declarations: e.g. `CreateUser(ctx Ctx) (*Ret, error)`
+      // These end with `)` but have non-empty text after the outermost closing paren,
+      // indicating a return-type list that is part of a signature, not a call.
+      {
+        let depth = 0;
+        let firstGroupClosed = -1;
+        for (let ci = 0; ci < trimmed.length; ci++) {
+          if (trimmed[ci] === "(") {
+            depth++;
+          } else if (trimmed[ci] === ")") {
+            depth--;
+            if (depth === 0) {
+              firstGroupClosed = ci;
+              break;
+            }
+          }
+        }
+        if (
+          firstGroupClosed >= 0 &&
+          trimmed.slice(firstGroupClosed + 1).trim().length > 0
+        ) {
+          dbg(`skip: text after outermost ')' — looks like a method signature`);
+          return actions;
+        }
+      }
+
+      // ── Find the function-name column to hover on ────────────────────────────
+      // The function name is the last word-identifier immediately before the
+      // OUTERMOST opening '(' of the call.  We find the outermost paren by
+      // scanning left-to-right (the line starts with the call expression).
+      const firstOpenIdx = trimmed.indexOf("(");
+      const beforeParen = trimmed.slice(0, firstOpenIdx);
+      const funcNameInTrimmed = beforeParen.match(/\.?(\w+)\s*$/);
+      if (!funcNameInTrimmed) {
+        dbg(`skip: cannot extract function name from "${beforeParen}"`);
+        return actions;
+      }
+      const funcName = funcNameInTrimmed[1];
+      // Map back to the original (indented) line
+      const firstOpenIdxInLine = line.indexOf("(", indent.length);
+      const funcNameCol = line.lastIndexOf(funcName, firstOpenIdxInLine);
+
+      dbg(
+        `hovering on "${funcName}" at col ${funcNameCol} (line: "${trimmed}")`,
+      );
+
+      const hoverPos = new vscode.Position(range.start.line, funcNameCol);
+
+      // ── Request hover from gopls ─────────────────────────────────────────────
+      const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+        "vscode.executeHoverProvider",
+        document.uri,
+        hoverPos,
+      );
+
+      if (!hovers || hovers.length === 0) {
+        dbg("skip: no hover returned");
+        return actions;
+      }
+
+      const hoverText = hovers
+        .flatMap((h) =>
+          h.contents.map((c) =>
+            typeof c === "string" ? c : (c as vscode.MarkdownString).value,
+          ),
+        )
+        .join("\n");
+
+      dbg(`hover text (first 400 chars): ${hoverText.substring(0, 400)}`);
+
+      // ── Parse function signature from hover ──────────────────────────────────
+      const returnTypes = this.extractReturnTypesFromHover(hoverText);
+      dbg(
+        `returnTypes: ${returnTypes === undefined ? "undefined" : JSON.stringify(returnTypes)}`,
+      );
+
+      if (!returnTypes || returnTypes.length === 0) {
+        dbg("skip: no return types found or void function");
+        return actions;
+      }
+
+      // Only show action when the last return type is `error`
+      const lastType = returnTypes[returnTypes.length - 1].type;
+      if (lastType !== "error") {
+        dbg(`skip: last return type is "${lastType}", not "error"`);
+        return actions;
+      }
+
+      // ── Build variable names ─────────────────────────────────────────────────
+      const varNames = returnTypes.map((r) =>
+        r.name && r.name !== "_" ? r.name : this.typeToVarName(r.type),
+      );
+      const errVar = varNames[varNames.length - 1];
+      const callExpr = trimmed;
+      const lineRange = document.lineAt(range.start.line).range;
+
+      const newContent = [
+        `${indent}${varNames.join(", ")} := ${callExpr}`,
+        `${indent}if ${errVar} != nil {`,
+        `${indent}\treturn`,
+        `${indent}}`,
+      ].join("\n");
+
+      dbg(`action ready: varNames=${varNames.join(", ")}`);
+
+      const action = new vscode.CodeAction(
+        "Handle error (Go Assistant)",
+        vscode.CodeActionKind.Refactor,
+      );
+      action.edit = new vscode.WorkspaceEdit();
+      action.edit.replace(document.uri, lineRange, newContent);
+      actions.push(action);
+    } catch (error) {
+      console.error("[go-assistant] createHandleErrorActions error:", error);
+    }
+
+    return actions;
+  }
+
+  /**
+   * Extracts return type information from a gopls hover text.
+   * Handles:
+   *   func Name(...) error
+   *   func Name(...) (Type, error)
+   *   func (r Recv) Name(...) (val Type, err error)
+   *   func (*pkg.Generic[T]) Name(...) (Type, error)
+   */
+  private extractReturnTypesFromHover(
+    hoverText: string,
+  ): { name?: string; type: string }[] | undefined {
+    // Pull the first Go code block.  gopls uses ```go fences.
+    // Normalise \r\n → \n just in case.
+    const normalised = hoverText.replace(/\r\n/g, "\n");
+    const goBlock = normalised.match(/```(?:go)?\n([\s\S]*?)```/)?.[1];
+    if (!goBlock) {
+      console.log(
+        "[go-assistant] extractReturnTypes: no go code block found in hover",
+      );
+      return undefined;
+    }
+
+    // ── Strategy 1: regex over the first func line ───────────────────────────
+    // Collapse the go block to a single line for matching (handles multi-line sigs)
+    const oneLine = goBlock.replace(/\n\s*/g, " ").trim();
+
+    // Match:  func [receiver] FuncName([params]) [returns]
+    // Receiver can contain brackets for generics: (*T[A, B])
+    // We capture everything after the parameter closing paren as "tail".
+    const funcRe =
+      /^func\s+(?:\([^)]*(?:\([^)]*\)[^)]*)*\)\s+)?\w+\s*\(([^)(]|\([^)]*\))*\)\s*(.*)/;
+    const funcMatch = oneLine.match(funcRe);
+    if (!funcMatch) {
+      console.log(
+        `[go-assistant] extractReturnTypes: funcRe did not match: "${oneLine.substring(0, 200)}"`,
+      );
+      return undefined;
+    }
+
+    const tail = (funcMatch[2] ?? "").trim();
+    console.log(`[go-assistant] extractReturnTypes: tail="${tail}"`);
+
+    if (!tail) {
+      return []; // void
+    }
+
+    // tail may have a trailing comment or doc — take only the return-type part
+    // (everything up to the first whitespace-only EOL or brace)
+    const returnsPart = tail.replace(/\s*(?:\/\/.*)?$/, "").trim();
+    if (!returnsPart || returnsPart === "{") {
+      return []; // void
+    }
+
+    return this.parseGoReturnTypes(returnsPart);
+  }
+
+  private parseGoReturnTypes(
+    returnsPart: string,
+  ): { name?: string; type: string }[] {
+    if (!returnsPart) {
+      return [];
+    }
+
+    // Single un-parenthesised return type, e.g. "error" or "*Message" or "string"
+    if (!returnsPart.startsWith("(")) {
+      return [{ type: returnsPart.trim() }];
+    }
+
+    // Parenthesised: "(Type1, Type2)" or "(name1 Type1, name2 Type2)"
+    const inner = returnsPart.slice(1, -1).trim();
+    if (!inner) {
+      return [];
+    }
+
+    const parts = this.splitTopLevelCommas(inner);
+    return parts.map((part) => {
+      const trimmed = part.trim();
+      // Named return: "name type" where name is a Go identifier and type is next token
+      // Handles: "err error", "msg *Message", "n int"
+      const namedMatch = trimmed.match(/^(\w+)\s+(\S.*)$/);
+      if (namedMatch) {
+        // Distinguish "name Type" from a single bare type like "[]byte"
+        // If first token is lowercase or looks like a Go identifier (not a type keyword)
+        // we treat it as a named return.
+        const first = namedMatch[1];
+        const second = namedMatch[2];
+        // Named if first token starts lowercase AND isn't a known type prefix
+        if (
+          first[0] === first[0].toLowerCase() &&
+          !first.match(/^(map|chan|func|interface|struct)$/)
+        ) {
+          return { name: first, type: second };
+        }
+      }
+      return { type: trimmed };
+    });
+  }
+
+  private splitTopLevelCommas(s: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === "(" || ch === "[" || ch === "{") {
+        depth++;
+      } else if (ch === ")" || ch === "]" || ch === "}") {
+        depth--;
+      } else if (ch === "," && depth === 0) {
+        parts.push(s.slice(start, i));
+        start = i + 1;
+      }
+    }
+    parts.push(s.slice(start));
+    return parts;
+  }
+
+  /**
+   * Derives a sensible Go variable name from a type string.
+   * e.g. "*grpc.ClientConn" → "conn", "error" → "err", "*http.Request" → "req"
+   */
+  private typeToVarName(typeName: string): string {
+    // Strip pointer, slice, channel, etc. decorators
+    let base = typeName.replace(/^[*\[\]&]+/, "").trim();
+
+    // Remove package qualifier: pkg.Type → Type
+    const dotIdx = base.lastIndexOf(".");
+    if (dotIdx >= 0) {
+      base = base.slice(dotIdx + 1);
+    }
+
+    // Well-known names
+    const known: Record<string, string> = {
+      error: "err",
+      bool: "ok",
+      string: "s",
+      Context: "ctx",
+      ResponseWriter: "w",
+      Request: "req",
+      Response: "resp",
+      ClientConn: "conn",
+      Server: "srv",
+      Client: "client",
+      Conn: "conn",
+      Reader: "r",
+      Writer: "w",
+      Buffer: "buf",
+      File: "f",
+    };
+    if (known[base]) {
+      return known[base];
+    }
+
+    // Numeric types
+    if (
+      /^u?int(8|16|32|64)?$/.test(base) ||
+      base === "byte" ||
+      base === "rune"
+    ) {
+      return "n";
+    }
+    if (
+      /^float(32|64)$/.test(base) ||
+      base === "complex128" ||
+      base === "complex64"
+    ) {
+      return "f";
+    }
+
+    // Generic fallback: lower-case first letter
+    if (!base) {
+      return "v";
+    }
+    return base.charAt(0).toLowerCase() + base.slice(1);
   }
 
   private createRunDebugTestActions(

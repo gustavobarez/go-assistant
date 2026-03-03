@@ -74,6 +74,47 @@ export interface LastRunSpec {
   testPattern?: string;
 }
 
+// ─── Profiling mode ───────────────────────────────────────────────────────
+
+export type ProfilingMode = "cpu" | "memory" | "blocking" | "mutex";
+
+export const PROFILING_MODES: {
+  id: ProfilingMode;
+  label: string;
+  flag: string;
+  description: string;
+  icon: string;
+}[] = [
+  {
+    id: "cpu",
+    label: "CPU",
+    flag: "-cpuprofile",
+    description: "Record CPU usage",
+    icon: "$(graph)",
+  },
+  {
+    id: "memory",
+    label: "Memory",
+    flag: "-memprofile",
+    description: "Record memory allocations",
+    icon: "$(database)",
+  },
+  {
+    id: "blocking",
+    label: "Blocking",
+    flag: "-blockprofile",
+    description: "Record goroutine blocking",
+    icon: "$(lock)",
+  },
+  {
+    id: "mutex",
+    label: "Mutex",
+    flag: "-mutexprofile",
+    description: "Record mutex contention",
+    icon: "$(sync)",
+  },
+];
+
 // ─── Test flag options ────────────────────────────────────────────────────
 
 export interface TestFlagOption {
@@ -416,6 +457,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
   private workspacePath?: string;
   private activeFlags: Set<string>;
   private flagValues: Record<string, string>;
+  private activeProfile: ProfilingMode | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const saved = context.workspaceState.get<string[]>(
@@ -441,6 +483,16 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       "goAssistant.testFlagValues",
       {},
     );
+    this.activeProfile = context.workspaceState.get<ProfilingMode | undefined>(
+      "goAssistant.activeProfile",
+      undefined,
+    );
+    // Restore context key so when-clauses are correct after extension restart
+    vscode.commands.executeCommand(
+      "setContext",
+      "goAssistant.profileActive",
+      !!this.activeProfile,
+    );
   }
 
   refresh(): void {
@@ -464,6 +516,22 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     this.context.workspaceState.update("goAssistant.testFlagValues", values);
   }
 
+  getActiveProfile(): ProfilingMode | undefined {
+    return this.activeProfile;
+  }
+
+  setActiveProfile(profile: ProfilingMode | undefined): void {
+    this.activeProfile = profile;
+    this.context.workspaceState.update("goAssistant.activeProfile", profile);
+    // Context key lets package.json when-clauses react to profile state
+    vscode.commands.executeCommand(
+      "setContext",
+      "goAssistant.profileActive",
+      !!profile,
+    );
+    this.refresh();
+  }
+
   /**
    * Build the extra flags string for a `go test` invocation.
    * @param skipRun Skip the global `-run` filter (use when the command provides its own -run).
@@ -473,12 +541,12 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
   buildExtraFlags(skipRun = false, coverageFile?: string): string {
     const parts: string[] = [];
     for (const f of AVAILABLE_TEST_FLAGS) {
-      if (!this.activeFlags.has(f.id)) continue;
-      if (f.external) continue; // handled below or externally
-      if (f.id === "run" && skipRun) continue;
+      if (!this.activeFlags.has(f.id)) {continue;}
+      if (f.external) {continue;} // handled below or externally
+      if (f.id === "run" && skipRun) {continue;}
       if (f.promptForValue) {
         const val = this.flagValues[f.id] ?? f.defaultValue ?? "";
-        if (val) parts.push(`${f.flag}="${val}"`);
+        if (val) {parts.push(`${f.flag}="${val}"`);}
       } else {
         parts.push(f.flag);
       }
@@ -646,7 +714,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const trimmed = line.trim();
-        if (trimmed.startsWith("//")) continue;
+        if (trimmed.startsWith("//")) {continue;}
 
         const testMatch = line.match(
           /^func\s+(Test[A-Z]\w*|Benchmark[A-Z]\w*|Example[A-Z]\w*)\s*\(/,
@@ -660,7 +728,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
 
         if (inTestFunc) {
           for (const ch of line) {
-            if (ch === "{") braceDepth++;
+            if (ch === "{") {braceDepth++;}
             else if (ch === "}") {
               braceDepth--;
               if (braceDepth === 0) {
@@ -680,14 +748,16 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       for (const tf of testFunctions) {
         const subTests: SubTestInfo[] = [];
         const literalRunRegex = /[tb]\.Run\(\s*"([^"]+)"/g;
-        // Matches variable-based t.Run(tt.name,...) or t.Run(tc.name,...) etc.
-        const varRunRegex = /[tb]\.Run\(\s*[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)?\s*,/;
+        // Captures the actual field name from t.Run(tt.fieldName, ...) or t.Run(tc.fieldName, ...)
+        // Group 1 = loop variable (tt/tc/...), group 2 = field name (name/title/desc/...)
+        const varRunRegex = /[tb]\.Run\(\s*[a-zA-Z_]\w*\.([a-zA-Z_]\w*)\s*,/;
 
         let hasVarRun = false;
+        let nameField = "name"; // default, overridden once t.Run(xx.field) is detected
 
         for (let i = tf.startIdx + 1; i <= tf.endIdx; i++) {
           const line = lines[i];
-          if (line.trim().startsWith("//")) continue;
+          if (line.trim().startsWith("//")) {continue;}
 
           // Literal t.Run("name", ...) — may appear multiple times per line
           literalRunRegex.lastIndex = 0;
@@ -705,14 +775,18 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             });
           }
 
-          // Variable-based t.Run(tt.name, ...)
-          if (!hasVarRun && varRunRegex.test(line)) {
-            hasVarRun = true;
+          // Variable-based t.Run(tt.fieldName, ...) — capture the actual field name
+          if (!hasVarRun) {
+            const vrm = varRunRegex.exec(line);
+            if (vrm) {
+              hasVarRun = true;
+              nameField = vrm[1]; // e.g. "name", "title", "desc", etc.
+            }
           }
         }
 
         // Table-driven pattern: if no literal runs but a variable-based t.Run was found,
-        // try the `name: "case name"` named-field strategy (most common Go convention).
+        // use the dynamically discovered nameField (not hardcoded "name").
         // If that also fails, leave subTests as empty array [] so the tree shows the
         // node as expandable — subtests will be populated from run output.
         if (subTests.length === 0 && hasVarRun) {
@@ -720,7 +794,10 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             .slice(tf.startIdx + 1, tf.endIdx + 1)
             .join("\n");
 
-          const namedFieldRegex = /\bname\s*:\s*"([^"]+)"/g;
+          const namedFieldRegex = new RegExp(
+            `\\b${nameField}\\s*:\\s*"([^"]+)"`,
+            "g",
+          );
           let nm: RegExpExecArray | null;
           while ((nm = namedFieldRegex.exec(funcBody)) !== null) {
             const subName = nm[1];
@@ -960,7 +1037,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     while ((m = runRegex.exec(output)) !== null) {
       const parent = m[1];
       const rawSub = m[2];
-      if (!discovered.has(parent)) discovered.set(parent, new Map());
+      if (!discovered.has(parent)) {discovered.set(parent, new Map());}
       if (!discovered.get(parent)!.has(rawSub)) {
         discovered.get(parent)!.set(rawSub, { status: "unknown" });
       }
@@ -973,20 +1050,20 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       const rawSub = m[3];
       const status = m[1] === "PASS" ? "pass" : "fail";
       const duration = parseFloat(m[4]);
-      if (!discovered.has(parent)) discovered.set(parent, new Map());
+      if (!discovered.has(parent)) {discovered.set(parent, new Map());}
       discovered.get(parent)!.set(rawSub, { status, duration });
     }
 
-    if (discovered.size === 0) return;
+    if (discovered.size === 0) {return;}
 
     let changed = false;
     for (const mod of this.modules) {
       for (const pkg of mod.packages) {
-        if (packagePath && pkg.packagePath !== packagePath) continue;
+        if (packagePath && pkg.packagePath !== packagePath) {continue;}
         for (const file of pkg.files) {
           for (const test of file.tests) {
             const subs = discovered.get(test.name);
-            if (!subs) continue;
+            if (!subs) {continue;}
             // Rebuild subTests list (preserve existing statically-found entries
             // or replace placeholder [] entirely with discovered ones)
             const newSubTests: SubTestInfo[] = [];
@@ -1012,7 +1089,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       }
     }
 
-    if (changed) this.refresh();
+    if (changed) {this.refresh();}
   }
 
   // ── Status updates ────────────────────────────────────────────────────────

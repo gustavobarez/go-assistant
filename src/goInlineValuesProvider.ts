@@ -21,14 +21,14 @@ export class GoInlineValuesProvider implements vscode.InlineValuesProvider {
     const stoppedLine = context.stoppedLocation.start.line;
 
     for (let line = viewPort.start.line; line <= viewPort.end.line; line++) {
-      if (line === stoppedLine) continue;
+      if (line === stoppedLine) {continue;}
 
       const lineText = document.lineAt(line).text;
       const trimmed = lineText.trim();
 
       // Skip for-range loops — the iteration variable is usually a struct and
       // delve would render its full type path, making the display very noisy.
-      if (/\bfor\b.*\brange\b/.test(trimmed)) continue;
+      if (/\bfor\b.*\brange\b/.test(trimmed)) {continue;}
 
       // Collect variable names from short declarations and var statements.
       const declRegex = /(?:^|\bis\s*)(?:var\s+(\w+)|([\w,\s]+)\s*:=)/g;
@@ -42,10 +42,10 @@ export class GoInlineValuesProvider implements vscode.InlineValuesProvider {
       // These produce very long strings in the debugger output.
       const rhsOfDecl = ((): string => {
         const assignIdx = lineText.indexOf(":=");
-        if (assignIdx !== -1) return lineText.slice(assignIdx + 2).trimStart();
+        if (assignIdx !== -1) {return lineText.slice(assignIdx + 2).trimStart();}
         const varAssignIdx = lineText.indexOf("=");
         if (varAssignIdx !== -1)
-          return lineText.slice(varAssignIdx + 1).trimStart();
+          {return lineText.slice(varAssignIdx + 1).trimStart();}
         return "";
       })();
 
@@ -54,7 +54,7 @@ export class GoInlineValuesProvider implements vscode.InlineValuesProvider {
         /^&?[A-Za-z_]\w*\s*\{/.test(rhsOfDecl) || // &Struct{ or Struct{
         /^\[\]/.test(rhsOfDecl) || // slice literal
         /^map\[/.test(rhsOfDecl); // map literal
-      if (isVerboseRhs) continue;
+      if (isVerboseRhs) {continue;}
 
       for (const match of [...shortDecls, ...varDecls]) {
         // In short decls group 1 is the name; in var decls group 1 also.
@@ -62,9 +62,9 @@ export class GoInlineValuesProvider implements vscode.InlineValuesProvider {
           (n): n is string => !!n && /^[a-zA-Z_]\w*$/.test(n),
         );
         for (const varName of candidates) {
-          if (varName === "_") continue;
+          if (varName === "_") {continue;}
           const nameStart = lineText.indexOf(varName, match.index ?? 0);
-          if (nameStart === -1) continue;
+          if (nameStart === -1) {continue;}
           inlineValues.push(
             new vscode.InlineValueVariableLookup(
               new vscode.Range(

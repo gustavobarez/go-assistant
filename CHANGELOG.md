@@ -2,6 +2,49 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.2.0] - 2026-03-03
+
+### Adicionado
+
+#### 🧪 Testing — Profiling
+
+- **Modo de profiling global**: Novo botão `$(pulse)` no cabeçalho da view de testes. Permite selecionar um modo de profiling ativo (CPU, Memory, Blocking, Mutex) que é persistido entre sessões via `workspaceState`
+- **Profiling apply a qualquer execução individual**: Quando um modo está ativo, qualquer comando de execução que rode um único pacote, arquivo ou teste aplica automaticamente o flag correspondente (`-cpuprofile`, `-memprofile`, `-blockprofile`, `-mutexprofile`)
+- **pprof web UI**: Após a execução profiled, uma notificação oferece "Open pprof (web)" (abre `go tool pprof -http=:8080` e o browser automaticamente) ou "Open in terminal" (abre pprof interativo no terminal)
+- **Indicador visual no painel**: O título da view exibe `Profile: CPU` (ou o modo ativo) enquanto um perfil está selecionado — limpa automaticamente ao selecionar "None"
+- **Ícone diferenciado no cabeçalho**: Usa `$(pulse)` quando nenhum profile está ativo e `$(record)` quando há um profile ativo, via context key `goAssistant.profileActive`
+
+#### 🧪 Testing — Code Lens
+
+- **Botão `▶ Run` por função de teste**: Cada função `TestXxx`, `BenchmarkXxx` e `ExampleXxx` recebe um botão `▶ Run` no código que abre um picker com as opções: Run Test, Debug Test e os 4 modos de profiling
+- **Botão `▶ Run` por sub-teste (table-driven)**: Casos individuais de testes orientados a tabela recebem botões `▶ Run` diretamente no código, posicionados na linha de abertura `{` de cada caso
+- **Detecção de campo dinâmica**: O campo de nome do sub-teste é detectado diretamente da chamada `t.Run(tt.fieldName, ...)` — funciona com qualquer nome de campo (`name`, `title`, `desc`, etc.), não apenas `name`
+- **Suporte a map e struct**: Detecta tanto o padrão `[]struct{ ... }{{ name: "case" }}` quanto `map[string]struct{ ... }{ "case": { ... } }`
+
+#### 🧪 Testing — Geral
+
+- **Run / Debug / Profile por sub-teste**: Comando `go-assistant.runSubTestFromCode` para executar um sub-teste individual a partir do code lens, com picker Run/Debug/Profile idêntico ao de funções de teste
+
+### Corrigido
+
+#### 🧪 Testing — Profiling
+
+- **Profiling desativado para `./...`**: Comandos "Run All Tests" e "Run All Packages" não aplicam profiling (o `go test` não suporta flags de profile com múltiplos pacotes). Profiling é aplicado apenas em execuções de pacote único, arquivo ou teste
+
+#### 🧪 Testing — Geral
+
+- **"Run All Tests" usado module root correto**: O botão de rodar todos os testes no topo da view agora itera pelos module roots descobertos (igual ao "Run All Packages"), garantindo funcionamento correto em monorepos com múltiplos `go.mod`
+- **Cobertura HTML sem erro "not in std"**: `go tool cover` agora é executado a partir do `moduleRoot` (onde fica o `go.mod`) em vez do workspace root, evitando o erro `package X is not in std`
+- **Picker de interface não ignorava seleção**: `picker.dispose()` disparava `onDidHide` de forma síncrona antes de `resolve(selected)`, fazendo a seleção ser ignorada — corrigido invertendo a ordem
+- **Detecção de campo `name` em tests view**: A view de testes também usa o campo descoberto dinamicamente de `t.Run(tt.field)` em vez de assumir `name`
+
+### Removido
+
+- **Código morto de ~20KB**: Removidas as funções `findAvailableInterfaces`, `extractInterfaceMethods`, `getPackageNameFromDocument`, `implementInterfaceMethods` e as interfaces `InterfaceInfo`/`InterfaceMethod` de `extension.ts` — nunca eram chamadas
+- **Comando `runAllTestsWithCoverage`**: Removido (nunca foi registrado)
+
+---
+
 ## [0.1.9] - 2026-02-26
 
 ### Adicionado
