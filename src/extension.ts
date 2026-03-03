@@ -1,7 +1,7 @@
+import { exec, execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { exec, execFile } from "child_process";
 import * as vscode from "vscode";
 import { GoCodeActionProvider } from "./goCodeActionProvider";
 import { GoCodeLensProvider } from "./goCodeLensProvider";
@@ -38,13 +38,19 @@ function detectTestStatus(
   testName: string,
 ): "pass" | "fail" | "unknown" {
   const esc = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (new RegExp(`--- PASS: ${esc}\\b`, "m").test(output)) {return "pass";}
-  if (new RegExp(`--- FAIL: ${esc}\\b`, "m").test(output)) {return "fail";}
+  if (new RegExp(`--- PASS: ${esc}\\b`, "m").test(output)) {
+    return "pass";
+  }
+  if (new RegExp(`--- FAIL: ${esc}\\b`, "m").test(output)) {
+    return "fail";
+  }
   // No individual line found – check if the whole package passed.
   // `ok  \t<pkg>` (with spaces/tab) appears when every test in the package
   // passed, including after a cached run.  If the package passed and this
   // specific test didn't fail, it must have passed too.
-  if (/^ok[ \t]/m.test(output)) {return "pass";}
+  if (/^ok[ \t]/m.test(output)) {
+    return "pass";
+  }
   return "unknown";
 }
 
@@ -213,17 +219,6 @@ export function activate(context: vscode.ExtensionContext) {
     treeDataProvider: testsViewProvider,
     showCollapseAll: true,
   });
-
-  // Restore panel subtitle from persisted profile (survives extension restarts)
-  const restoredProfile = testsViewProvider.getActiveProfile();
-  if (restoredProfile) {
-    const restoredProfMode = PROFILING_MODES.find(
-      (p) => p.id === restoredProfile,
-    );
-    if (restoredProfMode) {
-      testsView.description = `Profile: ${restoredProfMode.label}`;
-    }
-  }
 
   context.subscriptions.push(testsView);
 
@@ -526,7 +521,9 @@ export function activate(context: vscode.ExtensionContext) {
 
         // Mark all tests in this root's modules as running
         for (const mod of modules) {
-          if (mod.moduleRoot !== root) {continue;}
+          if (mod.moduleRoot !== root) {
+            continue;
+          }
           for (const pkg of mod.packages) {
             for (const file of pkg.files) {
               for (const test of file.tests) {
@@ -658,12 +655,16 @@ export function activate(context: vscode.ExtensionContext) {
         placeHolder: "Mark flags to apply to all test runs",
       });
 
-      if (!selected) {return;}
+      if (!selected) {
+        return;
+      }
 
       const newValues: Record<string, string> = { ...currentValues };
 
       for (const f of AVAILABLE_TEST_FLAGS) {
-        if (!f.promptForValue) {continue;}
+        if (!f.promptForValue) {
+          continue;
+        }
         const isSelected = (selected as FlagPickItem[]).some(
           (s) => s.id === f.id,
         );
@@ -681,7 +682,9 @@ export function activate(context: vscode.ExtensionContext) {
             const idx = (selected as FlagPickItem[]).findIndex(
               (s) => s.id === f.id,
             );
-            if (idx !== -1) {(selected as FlagPickItem[]).splice(idx, 1);}
+            if (idx !== -1) {
+              (selected as FlagPickItem[]).splice(idx, 1);
+            }
           }
         } else {
           delete newValues[f.id];
@@ -694,7 +697,9 @@ export function activate(context: vscode.ExtensionContext) {
       const summary = newIds
         .map((id) => {
           const f = AVAILABLE_TEST_FLAGS.find((x) => x.id === id)!;
-          if (f.external) {return f.label;} // e.g. "Coverage Profile (save to file)"
+          if (f.external) {
+            return f.label;
+          } // e.g. "Coverage Profile (save to file)"
           return f.promptForValue && newValues[id]
             ? `${f.flag}="${newValues[id]}"`
             : f.flag;
@@ -933,19 +938,22 @@ export function activate(context: vscode.ExtensionContext) {
           }, 500);
 
           // Profile file is now fully written — safe to offer pprof
-          if (profileArgs)
-            {showPprofNotification(
+          if (profileArgs) {
+            showPprofNotification(
               item.packageInfo.packageName,
               packagePath,
               profileArgs.file,
               profileArgs.mode,
-            );}
+            );
+          }
         },
       );
 
       // When profiling: exec() above is the authoritative run (writes the profile).
       // Only use the terminal for the normal (non-profiled) flow.
-      if (!profileArgs) {sendCmd(terminal, packagePath, `go test ${extraFlags}`);}
+      if (!profileArgs) {
+        sendCmd(terminal, packagePath, `go test ${extraFlags}`);
+      }
     },
   );
 
@@ -1045,24 +1053,26 @@ export function activate(context: vscode.ExtensionContext) {
           }, 500);
 
           // Profile file is now fully written — safe to offer pprof
-          if (profileArgs)
-            {showPprofNotification(
+          if (profileArgs) {
+            showPprofNotification(
               fileName,
               packagePath,
               profileArgs.file,
               profileArgs.mode,
-            );}
+            );
+          }
         },
       );
 
       // When profiling: exec() above is the authoritative run (writes the profile).
       // Only use the terminal for the normal (non-profiled) flow.
-      if (!profileArgs)
-        {sendCmd(
+      if (!profileArgs) {
+        sendCmd(
           terminal,
           packagePath,
           `go test ${extraFlags} -run "${testPattern}"`,
-        );}
+        );
+      }
     },
   );
 
@@ -1075,7 +1085,9 @@ export function activate(context: vscode.ExtensionContext) {
     | undefined => {
     const activeProfile = testsViewProvider.getActiveProfile();
     const mode = PROFILING_MODES.find((p) => p.id === activeProfile);
-    if (!mode) {return undefined;}
+    if (!mode) {
+      return undefined;
+    }
     const safeName = displayName.replace(/[^a-zA-Z0-9]/g, "_");
     const file = path.join(
       os.tmpdir(),
@@ -1648,7 +1660,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage("No workspace folder open");
         return;
       }
-
 
       // Use the most recently loaded .out file (any scope: all / package / file / test)
       const coverageFile =
@@ -2301,11 +2312,17 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
       let finalized = false;
       const selListener = vscode.window.onDidChangeTextEditorSelection(
         async (e) => {
-          if (finalized) {return;}
-          if (e.textEditor.document.uri.toString() !== uri.toString()) {return;}
+          if (finalized) {
+            return;
+          }
+          if (e.textEditor.document.uri.toString() !== uri.toString()) {
+            return;
+          }
 
           const currentLine = e.selections[0].active.line;
-          if (currentLine === insertedLine) {return;} // still editing
+          if (currentLine === insertedLine) {
+            return;
+          } // still editing
 
           finalized = true;
           selListener.dispose();
@@ -2313,13 +2330,17 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           // 4. Read back what the user typed
           const doc = e.textEditor.document;
           const methodLineText = doc.lineAt(insertedLine).text.trim();
-          if (!methodLineText) {return;} // line was deleted/left blank
+          if (!methodLineText) {
+            return;
+          } // line was deleted/left blank
 
           // Parse: methodName(params) returnType
           const methodMatch = methodLineText.match(
             /^(\w+)\(([^)]*)\)\s*(.*?)\s*$/,
           );
-          if (!methodMatch) {return;}
+          if (!methodMatch) {
+            return;
+          }
 
           const methodName = methodMatch[1];
           const params = methodMatch[2];
@@ -2341,7 +2362,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
 
           for (const loc of implementors) {
             const fileKey = loc.uri.toString();
-            if (seenFiles.has(fileKey)) {continue;}
+            if (seenFiles.has(fileKey)) {
+              continue;
+            }
             seenFiles.add(fileKey);
 
             const implDoc = await vscode.workspace.openTextDocument(loc.uri);
@@ -2367,12 +2390,16 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
                       return s;
                     }
                     const child = findAtLine(s.children || [], line);
-                    if (child) {return child;}
+                    if (child) {
+                      return child;
+                    }
                   }
                   return undefined;
                 };
                 const sym = findAtLine(implSymbols, loc.range.start.line);
-                if (sym) {structName = sym.name;}
+                if (sym) {
+                  structName = sym.name;
+                }
               }
             } catch (_e) {
               // ignore
@@ -2381,10 +2408,14 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
             if (!structName) {
               const lineText = implDoc.lineAt(loc.range.start.line).text;
               const m = lineText.match(/type\s+(\w+)\s+struct/);
-              if (m) {structName = m[1];}
+              if (m) {
+                structName = m[1];
+              }
             }
 
-            if (!structName) {continue;}
+            if (!structName) {
+              continue;
+            }
 
             const receiver = structName[0].toLowerCase();
             const stub =
@@ -2629,7 +2660,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           placeHolder: "json, db, yaml, bson, form, env, validate ...",
           value: "json",
         });
-        if (!tagKey) {return;}
+        if (!tagKey) {
+          return;
+        }
 
         const tagValue = await vscode.window.showInputBox({
           prompt: `Tag value for '${tagKey}' on field '${fieldName}'`,
@@ -2640,7 +2673,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
               .get<string>("tagNamingCase", "camelCase")!,
           ),
         });
-        if (tagValue === undefined) {return;}
+        if (tagValue === undefined) {
+          return;
+        }
 
         const lineRange = document.lineAt(lineNumber).range;
         const existingTagsMatch = lineText.match(/^(.*?)\s*`([^`]*)`\s*$/);
@@ -2679,12 +2714,16 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           placeHolder: "json, db, yaml, bson, form, env, validate ...",
           value: "json",
         });
-        if (!tagKey) {return;}
+        if (!tagKey) {
+          return;
+        }
 
         const symbols = await vscode.commands.executeCommand<
           vscode.DocumentSymbol[]
         >("vscode.executeDocumentSymbolProvider", uri);
-        if (!symbols) {return;}
+        if (!symbols) {
+          return;
+        }
 
         const structSymbol = findSymbol(
           symbols,
@@ -2718,7 +2757,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           const fieldLine = document.lineAt(field.range.start.line).text;
           const fieldText = document.getText(field.range);
           const fieldMatch = fieldText.match(/^\s*(\w+)\s+/);
-          if (!fieldMatch) {continue;}
+          if (!fieldMatch) {
+            continue;
+          }
 
           const fName = fieldMatch[1];
           const tagValue = toTagName(fName, tagCasing);
@@ -2822,7 +2863,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
         for (const field of fields) {
           const fieldText = defDoc.getText(field.range);
           const fieldMatch = fieldText.match(/^\s*(\w+)\s+(.+)/);
-          if (!fieldMatch) {continue;}
+          if (!fieldMatch) {
+            continue;
+          }
           const fName = fieldMatch[1];
           const fType = fieldMatch[2].replace(/`[^`]*`/g, "").trim();
           const zeroVal = await resolveFieldZeroValue(defDoc, field, fType);
@@ -2859,8 +2902,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
           const lt = document.lineAt(li).text;
           const startCol = li === position.line ? openerStart : 0;
           for (let ci = startCol; ci < lt.length; ci++) {
-            if (lt[ci] === "{") {braceDepth++;}
-            else if (lt[ci] === "}") {
+            if (lt[ci] === "{") {
+              braceDepth++;
+            } else if (lt[ci] === "}") {
               braceDepth--;
               if (braceDepth === 0) {
                 closerLine = li;
@@ -2938,6 +2982,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
       if (event.affectsConfiguration("goAssistant")) {
         codeLensProvider.clearCache();
         codeLensProvider.refresh();
+        inlayHintsProvider.invalidateConfig();
         inlayHintsProvider.refresh();
       }
       if (event.affectsConfiguration("goAssistant.coverageDecorator")) {
@@ -3024,7 +3069,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
         placeHolder: "Select action",
       })) as OptionItem | undefined;
 
-      if (!selected || !selected.action) {return;}
+      if (!selected || !selected.action) {
+        return;
+      }
 
       if (selected.action === "run") {
         // If an active profile is set, run with profiling automatically
@@ -3058,7 +3105,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
 
       // One-time profile choice (ignores activeProfile)
       const profileMode = PROFILING_MODES.find((p) => p.id === selected.action);
-      if (!profileMode) {return;}
+      if (!profileMode) {
+        return;
+      }
       await runWithProfile(testName, `^${testName}$`, packagePath, profileMode);
     },
   );
@@ -3118,7 +3167,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
         placeHolder: "Select action",
       })) as OptionItem | undefined;
 
-      if (!selected || !selected.action) {return;}
+      if (!selected || !selected.action) {
+        return;
+      }
 
       if (selected.action === "run") {
         if (activeProfMode) {
@@ -3157,7 +3208,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
       }
 
       const profileMode = PROFILING_MODES.find((p) => p.id === selected.action);
-      if (!profileMode) {return;}
+      if (!profileMode) {
+        return;
+      }
       await runWithProfile(subTestName, runPattern, packagePath, profileMode);
     },
   );
@@ -3192,7 +3245,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
         placeHolder: "Select profiling mode applied to test runs",
       })) as ProfileItem | undefined;
 
-      if (selected === undefined) {return;}
+      if (selected === undefined) {
+        return;
+      }
 
       testsViewProvider.setActiveProfile(selected.value);
 
@@ -3732,8 +3787,12 @@ export function deactivate() {}
  */
 function goZeroValueForType(typeName: string): string {
   const t = typeName.trim();
-  if (t === "string") {return '""';}
-  if (t === "bool") {return "false";}
+  if (t === "string") {
+    return '""';
+  }
+  if (t === "bool") {
+    return "false";
+  }
   if (
     /^(int|int8|int16|int32|int64|uint|uint8|uint16|uint32|uint64|byte|rune|uintptr|float32|float64|complex64|complex128)$/.test(
       t,
@@ -3767,7 +3826,9 @@ async function resolveFieldZeroValue(
 ): Promise<string> {
   const simple = goZeroValueForType(fType);
   // Only need to check further when we fell through to the `T{}` fallback
-  if (!simple.endsWith("{}")) {return simple;}
+  if (!simple.endsWith("{}")) {
+    return simple;
+  }
 
   // Strip a leading package qualifier so we can locate the bare type name in the line
   const baseName = fType.includes(".") ? fType.split(".").pop()! : fType;
@@ -3777,7 +3838,9 @@ async function resolveFieldZeroValue(
     // Find the type name starting after the field name / keyword
     const searchFrom = field.selectionRange.end.character;
     const col = lineTxt.indexOf(baseName, searchFrom);
-    if (col === -1) {return simple;}
+    if (col === -1) {
+      return simple;
+    }
 
     const typePos = new vscode.Position(field.range.start.line, col);
     const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
@@ -3794,7 +3857,9 @@ async function resolveFieldZeroValue(
         )
         .join("\n");
       // gopls hover for an interface type contains "interface {" or "interface{"
-      if (/\binterface\s*\{/.test(hoverText)) {return "nil";}
+      if (/\binterface\s*\{/.test(hoverText)) {
+        return "nil";
+      }
     }
   } catch (_e) {
     // hover failed – fall back to static result

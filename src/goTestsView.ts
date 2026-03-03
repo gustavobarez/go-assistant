@@ -483,10 +483,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       "goAssistant.testFlagValues",
       {},
     );
-    this.activeProfile = context.workspaceState.get<ProfilingMode | undefined>(
-      "goAssistant.activeProfile",
-      undefined,
-    );
+    this.activeProfile = undefined;
     // Restore context key so when-clauses are correct after extension restart
     vscode.commands.executeCommand(
       "setContext",
@@ -522,7 +519,6 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
 
   setActiveProfile(profile: ProfilingMode | undefined): void {
     this.activeProfile = profile;
-    this.context.workspaceState.update("goAssistant.activeProfile", profile);
     // Context key lets package.json when-clauses react to profile state
     vscode.commands.executeCommand(
       "setContext",
@@ -541,12 +537,20 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
   buildExtraFlags(skipRun = false, coverageFile?: string): string {
     const parts: string[] = [];
     for (const f of AVAILABLE_TEST_FLAGS) {
-      if (!this.activeFlags.has(f.id)) {continue;}
-      if (f.external) {continue;} // handled below or externally
-      if (f.id === "run" && skipRun) {continue;}
+      if (!this.activeFlags.has(f.id)) {
+        continue;
+      }
+      if (f.external) {
+        continue;
+      } // handled below or externally
+      if (f.id === "run" && skipRun) {
+        continue;
+      }
       if (f.promptForValue) {
         const val = this.flagValues[f.id] ?? f.defaultValue ?? "";
-        if (val) {parts.push(`${f.flag}="${val}"`);}
+        if (val) {
+          parts.push(`${f.flag}="${val}"`);
+        }
       } else {
         parts.push(f.flag);
       }
@@ -714,7 +718,9 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const trimmed = line.trim();
-        if (trimmed.startsWith("//")) {continue;}
+        if (trimmed.startsWith("//")) {
+          continue;
+        }
 
         const testMatch = line.match(
           /^func\s+(Test[A-Z]\w*|Benchmark[A-Z]\w*|Example[A-Z]\w*)\s*\(/,
@@ -728,8 +734,9 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
 
         if (inTestFunc) {
           for (const ch of line) {
-            if (ch === "{") {braceDepth++;}
-            else if (ch === "}") {
+            if (ch === "{") {
+              braceDepth++;
+            } else if (ch === "}") {
               braceDepth--;
               if (braceDepth === 0) {
                 if (currentTest) {
@@ -757,7 +764,9 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
 
         for (let i = tf.startIdx + 1; i <= tf.endIdx; i++) {
           const line = lines[i];
-          if (line.trim().startsWith("//")) {continue;}
+          if (line.trim().startsWith("//")) {
+            continue;
+          }
 
           // Literal t.Run("name", ...) — may appear multiple times per line
           literalRunRegex.lastIndex = 0;
@@ -1037,7 +1046,9 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     while ((m = runRegex.exec(output)) !== null) {
       const parent = m[1];
       const rawSub = m[2];
-      if (!discovered.has(parent)) {discovered.set(parent, new Map());}
+      if (!discovered.has(parent)) {
+        discovered.set(parent, new Map());
+      }
       if (!discovered.get(parent)!.has(rawSub)) {
         discovered.get(parent)!.set(rawSub, { status: "unknown" });
       }
@@ -1050,20 +1061,28 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       const rawSub = m[3];
       const status = m[1] === "PASS" ? "pass" : "fail";
       const duration = parseFloat(m[4]);
-      if (!discovered.has(parent)) {discovered.set(parent, new Map());}
+      if (!discovered.has(parent)) {
+        discovered.set(parent, new Map());
+      }
       discovered.get(parent)!.set(rawSub, { status, duration });
     }
 
-    if (discovered.size === 0) {return;}
+    if (discovered.size === 0) {
+      return;
+    }
 
     let changed = false;
     for (const mod of this.modules) {
       for (const pkg of mod.packages) {
-        if (packagePath && pkg.packagePath !== packagePath) {continue;}
+        if (packagePath && pkg.packagePath !== packagePath) {
+          continue;
+        }
         for (const file of pkg.files) {
           for (const test of file.tests) {
             const subs = discovered.get(test.name);
-            if (!subs) {continue;}
+            if (!subs) {
+              continue;
+            }
             // Rebuild subTests list (preserve existing statically-found entries
             // or replace placeholder [] entirely with discovered ones)
             const newSubTests: SubTestInfo[] = [];
@@ -1089,7 +1108,9 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       }
     }
 
-    if (changed) {this.refresh();}
+    if (changed) {
+      this.refresh();
+    }
   }
 
   // ── Status updates ────────────────────────────────────────────────────────

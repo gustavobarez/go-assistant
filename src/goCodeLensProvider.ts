@@ -37,6 +37,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
     this._onDidChangeCodeLenses.event;
   private referenceCache: ReferenceCache = {};
   private readonly CACHE_TTL = 30000; // 30 seconds
+  private cachedConfig: Config | undefined;
 
   public refresh(): void {
     this._onDidChangeCodeLenses.fire();
@@ -44,6 +45,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
   public clearCache(): void {
     this.referenceCache = {};
+    this.cachedConfig = undefined;
   }
 
   /**
@@ -60,8 +62,11 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
   }
 
   private getConfig(): Config {
+    if (this.cachedConfig) {
+      return this.cachedConfig;
+    }
     const config = vscode.workspace.getConfiguration("goAssistant.codelens");
-    return {
+    this.cachedConfig = {
       enable: config.get<boolean>("enable", true),
       references: config.get<boolean>("references", true),
       methods: config.get<boolean>("methods", true),
@@ -74,6 +79,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
       runDebug: config.get<boolean>("runDebug", true),
       debugTests: config.get<boolean>("debugTests", true),
     };
+    return this.cachedConfig;
   }
 
   async provideCodeLenses(
@@ -98,10 +104,18 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         codeLenses.push(...mainLenses);
       }
 
+      if (token.isCancellationRequested) {
+        return [];
+      }
+
       // Debug table-driven tests
       if (config.debugTests) {
         const testLenses = await this.createTableDrivenTestLenses(document);
         codeLenses.push(...testLenses);
+      }
+
+      if (token.isCancellationRequested) {
+        return [];
       }
 
       // Package imports CodeLens (show how many files import this package)
@@ -112,10 +126,21 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         }
       }
 
+      if (token.isCancellationRequested) {
+        return [];
+      }
+
       const { symbols, rawSymbols: documentSymbols } =
         await this.getDocumentSymbols(document);
 
+      if (token.isCancellationRequested) {
+        return [];
+      }
+
       for (const symbol of symbols) {
+        if (token.isCancellationRequested) {
+          return [];
+        }
         if (this.isStruct(symbol)) {
           // References for struct
           if (config.references) {
@@ -972,13 +997,18 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
           "{",
           testMatch.index + testMatch[0].length,
         );
-        if (braceStart === -1) {continue;}
+        if (braceStart === -1) {
+          continue;
+        }
 
         let depth = 1,
           pos = braceStart + 1;
         while (pos < text.length && depth > 0) {
-          if (text[pos] === "{") {depth++;}
-          else if (text[pos] === "}") {depth--;}
+          if (text[pos] === "{") {
+            depth++;
+          } else if (text[pos] === "}") {
+            depth--;
+          }
           pos++;
         }
         const bodyText = text.slice(braceStart + 1, pos - 1);
@@ -988,7 +1018,9 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         // This is exactly how GoLand detects it — from the t.Run call itself,
         // not by hardcoding a "name" field assumption.
         const tRunMatch = bodyText.match(/\b(?:t|b)\.Run\(\s*(\w+)\.(\w+)\s*,/);
-        if (!tRunMatch) {continue;} // not table-driven
+        if (!tRunMatch) {
+          continue;
+        } // not table-driven
 
         const loopVar = tRunMatch[1]; // e.g. "tt" or "tc"
         const nameField = tRunMatch[2]; // e.g. "name" (or whatever field the user chose)
@@ -1051,7 +1083,9 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         while ((mk = mapKeyRe.exec(caseSearchText)) !== null) {
           const absOffset = caseSearchOffset + mk.index;
           const caseLine = document.positionAt(absOffset).line;
-          if (usedLines.has(caseLine)) {continue;}
+          if (usedLines.has(caseLine)) {
+            continue;
+          }
           const caseName = mk[1];
           lenses.push(
             new vscode.CodeLens(new vscode.Range(caseLine, 0, caseLine, 0), {
@@ -1089,8 +1123,11 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         let d = 1,
           j = i + 1;
         while (j < text.length && d > 0) {
-          if (text[j] === "{") {d++;}
-          else if (text[j] === "}") {d--;}
+          if (text[j] === "{") {
+            d++;
+          } else if (text[j] === "}") {
+            d--;
+          }
           j++;
         }
         const blockContent = text.slice(i + 1, j - 1);
@@ -1126,7 +1163,9 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
     for (let i = 0; i < valuesText.length; i++) {
       const c = valuesText[i];
       if (c === "{") {
-        if (depth === 0) {caseStart = i;}
+        if (depth === 0) {
+          caseStart = i;
+        }
         depth++;
       } else if (c === "}") {
         depth--;

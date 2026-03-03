@@ -79,17 +79,16 @@ export class GoCoverageDecorator {
 
   async loadCoverageFromFile(coverageFilePath: string): Promise<boolean> {
     try {
-      if (!fs.existsSync(coverageFilePath)) {
-        console.log("Coverage file not found:", coverageFilePath);
-        return false;
-      }
-
-      const content = fs.readFileSync(coverageFilePath, "utf-8");
+      const content = await fs.promises.readFile(coverageFilePath, "utf-8");
       this.parseCoverageData(content);
       this.lastLoadedFilePath = coverageFilePath;
       return true;
-    } catch (error) {
-      console.error("Error loading coverage file:", error);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        console.log("Coverage file not found:", coverageFilePath);
+      } else {
+        console.error("Error loading coverage file:", error);
+      }
       return false;
     }
   }

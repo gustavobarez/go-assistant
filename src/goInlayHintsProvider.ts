@@ -12,20 +12,27 @@ export class GoInlayHintsProvider implements vscode.InlayHintsProvider {
   public readonly onDidChangeInlayHints: vscode.Event<void> =
     this._onDidChangeInlayHints.event;
 
+  private cachedConfig: Config | undefined;
+
   public refresh(): void {
     this._onDidChangeInlayHints.fire();
   }
 
+  public invalidateConfig(): void {
+    this.cachedConfig = undefined;
+  }
+
   private getConfig(): Config {
+    if (this.cachedConfig) {
+      return this.cachedConfig;
+    }
     const config = vscode.workspace.getConfiguration("goAssistant.inlayHints");
-    const inspectionsConfig = vscode.workspace.getConfiguration(
-      "goAssistant.inspections",
-    );
-    return {
+    this.cachedConfig = {
       enable: config.get<boolean>("enable", false),
       buildTags: config.get<boolean>("buildTags", true),
       unhandledErrors: false, // Feature removed
     };
+    return this.cachedConfig;
   }
 
   async provideInlayHints(
