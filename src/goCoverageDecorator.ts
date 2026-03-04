@@ -1,5 +1,4 @@
 import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
 
 interface CoverageData {
@@ -134,16 +133,36 @@ export class GoCoverageDecorator {
   applyDecorationsToEditor(editor: vscode.TextEditor): void {
     const documentPath = editor.document.uri.fsPath;
 
-    // Find coverage data for this file (match by file suffix)
+    // Find coverage data for this file using a longest-path-suffix match so
+    // that same-named files in different packages are never confused.
+    // Coverage keys look like "github.com/user/repo/pkg/file.go"; we count
+    // how many trailing path components match the on-disk absolute path.
     let fileCoverage: CoverageData[] | undefined;
+    let bestMatchLen = 0;
 
     for (const [coverageFile, data] of this.coverageData.entries()) {
-      if (
-        documentPath.endsWith(coverageFile) ||
-        coverageFile.endsWith(path.basename(documentPath))
+      const coverageParts = coverageFile.replace(/\\/g, "/").split("/");
+      const docParts = documentPath.replace(/\\/g, "/").split("/");
+
+      let matchLen = 0;
+      for (
+        let i = 1;
+        i <= Math.min(coverageParts.length, docParts.length);
+        i++
       ) {
+        if (
+          coverageParts[coverageParts.length - i] ===
+          docParts[docParts.length - i]
+        ) {
+          matchLen++;
+        } else {
+          break;
+        }
+      }
+
+      if (matchLen > 0 && matchLen > bestMatchLen) {
+        bestMatchLen = matchLen;
         fileCoverage = data;
-        break;
       }
     }
 
@@ -152,7 +171,36 @@ export class GoCoverageDecorator {
       return;
     }
 
-    // Group coverage by line to avoid overlapping decorations causing different shades
+    // Returns true for lines that carry no executable statements and should
+    // never receive a coverage decoration (opening/closing braces, blank
+    // lines, comments, function/type declaration lines ending with "{", etc.).
+    const isNonExecutableLine = (lineIndex: number): boolean => {
+      if (lineIndex < 0 || lineIndex >= editor.document.lineCount) {
+        return true;
+      }
+      const t = editor.document.lineAt(lineIndex).text.trim();
+      if (!t) {
+        return true;
+      } // blank
+      if (t === "{" || t === "}") {
+        return true;
+      } // standalone brace
+      if (/^\/\//.test(t)) {
+        return true;
+      } // comment
+      // Function/method declaration ending with "{"
+      if (/\bfunc\b.*\{\s*$/.test(t)) {
+        return true;
+      }
+      // Type / struct / interface declaration ending with "{"
+      if (/^type\s+\w+.*\{\s*$/.test(t)) {
+        return true;
+      }
+      return false;
+    };
+
+    // Group coverage by line to avoid overlapping decorations causing
+    // different shades.  Covered always wins over uncovered.
     const linesCovered = new Set<number>();
     const linesUncovered = new Set<number>();
 
@@ -169,14 +217,14 @@ export class GoCoverageDecorator {
       }
     }
 
-    // Create ranges from line sets
-    const coveredRanges: vscode.Range[] = Array.from(linesCovered).map(
-      (line) => new vscode.Range(line, 0, line, Number.MAX_SAFE_INTEGER),
-    );
+    // Create ranges from line sets, skipping non-executable lines
+    const coveredRanges: vscode.Range[] = Array.from(linesCovered)
+      .filter((line) => !isNonExecutableLine(line))
+      .map((line) => new vscode.Range(line, 0, line, Number.MAX_SAFE_INTEGER));
 
-    const uncoveredRanges: vscode.Range[] = Array.from(linesUncovered).map(
-      (line) => new vscode.Range(line, 0, line, Number.MAX_SAFE_INTEGER),
-    );
+    const uncoveredRanges: vscode.Range[] = Array.from(linesUncovered)
+      .filter((line) => !isNonExecutableLine(line))
+      .map((line) => new vscode.Range(line, 0, line, Number.MAX_SAFE_INTEGER));
 
     editor.setDecorations(this.coveredDecorationType, coveredRanges);
     editor.setDecorations(this.uncoveredDecorationType, uncoveredRanges);
@@ -207,6 +255,7 @@ export class GoCoverageDecorator {
       }
     }
     this.coverageData.clear();
+    this.lastLoadedFilePath = undefined;
     vscode.commands.executeCommand(
       "setContext",
       "goAssistant.coverageAvailable",

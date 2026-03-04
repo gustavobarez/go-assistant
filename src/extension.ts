@@ -873,11 +873,26 @@ export function activate(context: vscode.ExtensionContext) {
       const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
       const profileArgs = getProfileArgs(item.packageInfo.packageName);
 
+      // For profiling runs, create an output channel so the user can see command output
+      let profileChannel: vscode.OutputChannel | undefined;
+      if (profileArgs) {
+        profileChannel = vscode.window.createOutputChannel(
+          `Go Profile — ${item.packageInfo.packageName}`,
+        );
+        profileChannel.appendLine(
+          `$ go test ${extraFlags} ${profileArgs.flag}`,
+        );
+        profileChannel.show(true /* preserveFocus */);
+      }
+
       exec(
         `go test ${extraFlags}${profileArgs ? ` ${profileArgs.flag}` : ""}`,
         { cwd: packagePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
+          if (profileChannel) {
+            profileChannel.appendLine(output);
+          }
           const historyEntries: TestRunEntry[] = [];
 
           for (const file of item.packageInfo.files) {
@@ -993,11 +1008,26 @@ export function activate(context: vscode.ExtensionContext) {
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
       const profileArgs = getProfileArgs(fileName);
 
+      // For profiling runs, create an output channel so the user can see command output
+      let profileChannel: vscode.OutputChannel | undefined;
+      if (profileArgs) {
+        profileChannel = vscode.window.createOutputChannel(
+          `Go Profile — ${fileName}`,
+        );
+        profileChannel.appendLine(
+          `$ go test ${extraFlags} ${profileArgs.flag} -run "${testPattern}"`,
+        );
+        profileChannel.show(true /* preserveFocus */);
+      }
+
       exec(
         `go test ${extraFlags}${profileArgs ? ` ${profileArgs.flag}` : ""} -run "${testPattern}"`,
         { cwd: packagePath },
         (error: any, stdout: string, stderr: string) => {
           const output = stdout + stderr;
+          if (profileChannel) {
+            profileChannel.appendLine(output);
+          }
           const historyEntries: TestRunEntry[] = [];
 
           for (const test of item.fileInfo.tests) {
@@ -1105,7 +1135,7 @@ export function activate(context: vscode.ExtensionContext) {
     profileMode: (typeof PROFILING_MODES)[0],
   ): Promise<void> => {
     const answer = await vscode.window.showInformationMessage(
-      `$(pulse) ${profileMode.label} profile ready. Open pprof?`,
+      `${profileMode.label} profile ready. Open pprof?`,
       "Open pprof (web)",
       "Open in terminal",
       "Dismiss",
@@ -1661,24 +1691,79 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      // Use the most recently loaded .out file (any scope: all / package / file / test)
-      const coverageFile =
-        coverageDecorator.getLastLoadedFilePath() ??
-        coverageFilePath(workspacePath);
+      // ── Resolve the coverage .out file ───────────────────────────────────
+      // Priority:
+      //  1. The file that the decorator most recently loaded successfully.
+      //  2. Fallback: scan os.tmpdir() for all go-assistant-coverage-*.out files
+      //     and pick the one with the most recent mtime.
+      let coverageFile = coverageDecorator.getLastLoadedFilePath();
 
-      if (!fs.existsSync(coverageFile)) {
+      if (!coverageFile || !fs.existsSync(coverageFile)) {
+        try {
+          const tmpFiles = fs
+            .readdirSync(os.tmpdir())
+            .filter(
+              (f) =>
+                f.startsWith("go-assistant-coverage-") && f.endsWith(".out"),
+            )
+            .map((f) => {
+              const full = path.join(os.tmpdir(), f);
+              const stat = fs.statSync(full);
+              return { full, mtime: stat.mtimeMs };
+            })
+            .sort((a, b) => b.mtime - a.mtime);
+
+          coverageFile = tmpFiles[0]?.full;
+        } catch {
+          // ignore read errors
+        }
+      }
+
+      if (!coverageFile || !fs.existsSync(coverageFile)) {
         vscode.window.showErrorMessage(
           "No coverage.out file found. Run tests with coverage first.",
         );
         return;
       }
 
-      // Run 'go tool cover' from the module root so it can resolve package paths.
-      // Using the workspace root can cause "package X is not in std" errors when
-      // the go.mod lives in a subdirectory.
-      const moduleRoot =
+      // ── Resolve the module root ───────────────────────────────────────────
+      // Read the first data line from the coverage file to extract the import
+      // path, then find the matching module from the known modules list.
+      // Falling back to workspace root last so we never silently use the wrong module.
+      let moduleRoot: string | undefined;
+
+      try {
+        const content = fs.readFileSync(coverageFile, "utf-8");
+        const firstDataLine = content
+          .split("\n")
+          .find((l, i) => i > 0 && l.trim() !== "");
+        if (firstDataLine) {
+          // Format: "module/path/file.go:line.col,line.col stmts count"
+          const importPath = firstDataLine.split(":")[0];
+          const modules = testsViewProvider.getModules();
+          // Find the module whose moduleName is a prefix of the import path
+          const match = modules
+            .filter(
+              (m) =>
+                importPath.startsWith(m.moduleName + "/") ||
+                importPath === m.moduleName,
+            )
+            .sort((a, b) => b.moduleName.length - a.moduleName.length)[0];
+          if (match) {
+            moduleRoot = match.moduleRoot;
+          }
+        }
+      } catch {
+        // ignore parse errors — fall through to default
+      }
+
+      moduleRoot ??=
         testsViewProvider.getModules()[0]?.moduleRoot ?? workspacePath;
-      const htmlFile = path.join(moduleRoot, "coverage.html");
+
+      const htmlFile = path.join(
+        os.tmpdir(),
+        `go-assistant-coverage-${Date.now()}.html`,
+      );
 
       execFile(
         "go",

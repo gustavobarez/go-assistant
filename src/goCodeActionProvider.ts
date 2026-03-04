@@ -4,9 +4,7 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
   public static readonly providedCodeActionKinds = [
     vscode.CodeActionKind.QuickFix,
     vscode.CodeActionKind.Refactor,
-    vscode.CodeActionKind.RefactorInline,
     vscode.CodeActionKind.Source,
-    vscode.CodeActionKind.SourceOrganizeImports,
   ];
 
   private getConfig() {
@@ -62,12 +60,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       ...this.createVarDeclarationActions(document, range, selectedText),
     );
 
-    // Anonymous function conversions
-    actions.push(...this.createAnonymousFuncActions(document, range));
-
-    // Unwrap else
-    actions.push(...this.createUnwrapElseActions(document, range));
-
     // Generate getter/setter actions
     const getterSetterActions = await this.createGetterSetterActions(
       document,
@@ -77,11 +69,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
     // Add missing return statement
     actions.push(...this.createAddReturnActions(document, range));
-
-    // Inline variable actions
-    actions.push(
-      ...this.createInlineVariableActions(document, range, selectedText),
-    );
 
     // Change signature actions (parameter manipulation)
     const signatureActions = await this.createChangeSignatureActions(
@@ -141,20 +128,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       ...this.createAssignmentToShortVarActions(document, range, selectedText),
     );
 
-    // Extract embedded type
-    const extractEmbeddedActions = await this.createExtractEmbeddedTypeActions(
-      document,
-      wordRange || range,
-    );
-    actions.push(...extractEmbeddedActions);
-
-    // Inline embedded struct/interface
-    const inlineEmbeddedActions = await this.createInlineEmbeddedActions(
-      document,
-      wordRange || range,
-    );
-    actions.push(...inlineEmbeddedActions);
-
     // Synchronize receiver names
     const syncReceiverActions =
       await this.createSyncReceiverNamesActions(document);
@@ -174,101 +147,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     actions.push(...this.createRunDebugTestActions(document, range));
 
     return actions.length > 0 ? actions : undefined;
-  }
-
-  private isBinaryOperation(text: string): boolean {
-    // Check if text contains binary operators
-    return (
-      /[+\-*/%&|^<>=!]+/.test(text) &&
-      text.split(/[+\-*/%&|^<>=!]+/).length === 2
-    );
-  }
-
-  private createFlipBinaryOperationActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-    text: string,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-
-    // Match binary operations like: a + b, x == y, etc.
-    const binaryOpMatch = text.match(
-      /^(.+?)\s*([+\-*/%&|^]|[<>=!]=?|&&|\|\|)\s*(.+)$/,
-    );
-
-    if (binaryOpMatch) {
-      const leftOperand = binaryOpMatch[1].trim();
-      const operator = binaryOpMatch[2].trim();
-      const rightOperand = binaryOpMatch[3].trim();
-
-      // For comparison operators, flip the operator too
-      const flippedOp = this.flipOperator(operator);
-
-      const flipAction = new vscode.CodeAction(
-        `Flip to: ${rightOperand} ${flippedOp} ${leftOperand}`,
-        vscode.CodeActionKind.Refactor,
-      );
-      flipAction.edit = new vscode.WorkspaceEdit();
-      flipAction.edit.replace(
-        document.uri,
-        range,
-        `${rightOperand} ${flippedOp} ${leftOperand}`,
-      );
-      actions.push(flipAction);
-    }
-
-    return actions;
-  }
-
-  private flipOperator(op: string): string {
-    const flipMap: { [key: string]: string } = {
-      "<": ">",
-      ">": "<",
-      "<=": ">=",
-      ">=": "<=",
-      "==": "==",
-      "!=": "!=",
-    };
-    return flipMap[op] || op;
-  }
-
-  private createMergeStringActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-
-    try {
-      const line = document.lineAt(range.start.line);
-      const text = line.text;
-
-      // Match adjacent string literals: "abc" + "def"
-      const mergeMatch = text.match(/"([^"]*)"\s*\+\s*"([^"]*)"/);
-
-      if (mergeMatch) {
-        const mergeAction = new vscode.CodeAction(
-          "Merge string literals",
-          vscode.CodeActionKind.Refactor,
-        );
-
-        const merged = `"${mergeMatch[1]}${mergeMatch[2]}"`;
-        const startPos = text.indexOf(mergeMatch[0]);
-        const replaceRange = new vscode.Range(
-          range.start.line,
-          startPos,
-          range.start.line,
-          startPos + mergeMatch[0].length,
-        );
-
-        mergeAction.edit = new vscode.WorkspaceEdit();
-        mergeAction.edit.replace(document.uri, replaceRange, merged);
-        actions.push(mergeAction);
-      }
-    } catch (error) {
-      // Ignore errors
-    }
-
-    return actions;
   }
 
   private createExtractVariableActions(
@@ -513,401 +391,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     return actions;
   }
 
-  private createImportManagementActions(
-    document: vscode.TextDocument,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-    const text = document.getText();
-
-    // Sort imports
-    const sortImportsAction = new vscode.CodeAction(
-      "Sort imports",
-      vscode.CodeActionKind.SourceOrganizeImports,
-    );
-    sortImportsAction.command = {
-      command: "go.tools.sortImports",
-      title: "Sort Imports",
-    };
-    actions.push(sortImportsAction);
-
-    // Cleanup imports (gopls organize)
-    const cleanupAction = new vscode.CodeAction(
-      "Cleanup imports (remove unused + sort)",
-      vscode.CodeActionKind.SourceOrganizeImports,
-    );
-    cleanupAction.command = {
-      command: "go.import.add",
-      title: "Organize Imports",
-    };
-    actions.push(cleanupAction);
-
-    // Detect and handle import blocks
-    const importBlockRegex = /import\s+\([\s\S]*?\)/g;
-    const importBlocks = text.match(importBlockRegex);
-
-    // Merge multiple import blocks
-    if (importBlocks && importBlocks.length > 1) {
-      const mergeAction = new vscode.CodeAction(
-        "Merge import blocks",
-        vscode.CodeActionKind.SourceOrganizeImports,
-      );
-      mergeAction.edit = new vscode.WorkspaceEdit();
-
-      // Collect all imports
-      const allImports = new Set<string>();
-      importBlocks.forEach((block) => {
-        const imports = block.match(/"[^"]+"/g) || [];
-        imports.forEach((imp) => allImports.add(imp));
-      });
-
-      // Create merged block
-      const mergedImports = Array.from(allImports).sort().join("\n\t");
-      const newBlock = `import (\n\t${mergedImports}\n)`;
-
-      // Replace first block, remove others
-      const firstBlockIndex = text.indexOf(importBlocks[0]);
-      const firstBlockEnd = firstBlockIndex + importBlocks[0].length;
-      mergeAction.edit.replace(
-        document.uri,
-        new vscode.Range(
-          document.positionAt(firstBlockIndex),
-          document.positionAt(firstBlockEnd),
-        ),
-        newBlock,
-      );
-
-      // Remove other blocks
-      for (let i = 1; i < importBlocks.length; i++) {
-        const blockIndex = text.indexOf(importBlocks[i]);
-        const blockEnd = blockIndex + importBlocks[i].length;
-        mergeAction.edit.delete(
-          document.uri,
-          new vscode.Range(
-            document.positionAt(blockIndex),
-            document.positionAt(blockEnd + 1), // +1 for newline
-          ),
-        );
-      }
-
-      actions.push(mergeAction);
-    }
-
-    // Detect dot imports and offer to rewrite
-    const dotImportRegex = /import\s+\.\s+"([^"]+)"/g;
-    let dotImportMatch;
-    while ((dotImportMatch = dotImportRegex.exec(text)) !== null) {
-      const pkgPath = dotImportMatch[1];
-      const pkgName = pkgPath.split("/").pop() || pkgPath;
-
-      const rewriteAction = new vscode.CodeAction(
-        `Rewrite dot import "${pkgPath}"`,
-        vscode.CodeActionKind.Source,
-      );
-
-      const startPos = document.positionAt(dotImportMatch.index);
-      const endPos = document.positionAt(
-        dotImportMatch.index + dotImportMatch[0].length,
-      );
-
-      rewriteAction.edit = new vscode.WorkspaceEdit();
-      rewriteAction.edit.replace(
-        document.uri,
-        new vscode.Range(startPos, endPos),
-        `import "${pkgPath}"`,
-      );
-
-      actions.push(rewriteAction);
-    }
-
-    // Detect broken imports (imports with syntax errors or missing closing quote)
-    const brokenImportRegex = /import\s+.*?"([^"]*?)$/gm;
-    let brokenMatch;
-    const brokenImports: Array<{ start: number; end: number; line: string }> =
-      [];
-
-    while ((brokenMatch = brokenImportRegex.exec(text)) !== null) {
-      const lineStart = text.lastIndexOf("\n", brokenMatch.index) + 1;
-      const lineEnd = text.indexOf("\n", brokenMatch.index);
-      if (lineEnd !== -1) {
-        brokenImports.push({
-          start: lineStart,
-          end: lineEnd,
-          line: text.substring(lineStart, lineEnd),
-        });
-      }
-    }
-
-    if (brokenImports.length > 0) {
-      // Remove all broken imports
-      const removeAllBrokenAction = new vscode.CodeAction(
-        `Remove ${brokenImports.length} broken import(s)`,
-        vscode.CodeActionKind.Source,
-      );
-      removeAllBrokenAction.edit = new vscode.WorkspaceEdit();
-
-      for (const brokenImport of brokenImports) {
-        removeAllBrokenAction.edit.delete(
-          document.uri,
-          new vscode.Range(
-            document.positionAt(brokenImport.start),
-            document.positionAt(brokenImport.end + 1),
-          ),
-        );
-      }
-
-      actions.push(removeAllBrokenAction);
-
-      // Individual broken import removal
-      for (const brokenImport of brokenImports) {
-        const removeAction = new vscode.CodeAction(
-          `Remove broken import: ${brokenImport.line.trim()}`,
-          vscode.CodeActionKind.Source,
-        );
-        removeAction.edit = new vscode.WorkspaceEdit();
-        removeAction.edit.delete(
-          document.uri,
-          new vscode.Range(
-            document.positionAt(brokenImport.start),
-            document.positionAt(brokenImport.end + 1),
-          ),
-        );
-        actions.push(removeAction);
-      }
-    }
-
-    // Check for unused imports using diagnostics
-    const unusedImports = this.detectUnusedImports(document);
-    if (unusedImports.length > 0) {
-      // Remove all unused imports
-      const removeAllAction = new vscode.CodeAction(
-        `Remove ${unusedImports.length} unused import(s)`,
-        vscode.CodeActionKind.Source,
-      );
-      removeAllAction.edit = new vscode.WorkspaceEdit();
-
-      for (const unusedImport of unusedImports) {
-        removeAllAction.edit.delete(document.uri, unusedImport.range);
-      }
-
-      actions.push(removeAllAction);
-
-      // Individual unused import removal
-      for (const unusedImport of unusedImports) {
-        const removeAction = new vscode.CodeAction(
-          `Remove unused import "${unusedImport.path}"`,
-          vscode.CodeActionKind.Source,
-        );
-        removeAction.edit = new vscode.WorkspaceEdit();
-        removeAction.edit.delete(document.uri, unusedImport.range);
-        actions.push(removeAction);
-      }
-    }
-
-    return actions;
-  }
-
-  private detectUnusedImports(
-    document: vscode.TextDocument,
-  ): Array<{ path: string; range: vscode.Range }> {
-    const text = document.getText();
-    const unusedImports: Array<{ path: string; range: vscode.Range }> = [];
-
-    // Find all imports
-    const importBlockMatch = text.match(/import\s+\(([\s\S]*?)\)/);
-    if (!importBlockMatch) {
-      return unusedImports;
-    }
-
-    const importsText = importBlockMatch[1];
-    const importLines = importsText.split("\n");
-    const importBlockStart = text.indexOf(importBlockMatch[0]);
-    let currentPos = importBlockStart + "import (".length;
-
-    for (const line of importLines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("//")) {
-        currentPos += line.length + 1;
-        continue;
-      }
-
-      // Match: alias "path" or just "path"
-      const importMatch = trimmed.match(/(?:(\w+)\s+)?"([^"]+)"/);
-      if (importMatch) {
-        const alias = importMatch[1];
-        const pkgPath = importMatch[2];
-        const pkgName = alias || pkgPath.split("/").pop() || pkgPath;
-
-        // Check if package is used in code (outside import block)
-        const codeAfterImports = text.substring(
-          text.indexOf(")", importBlockStart) + 1,
-        );
-        const isUsed = new RegExp(`\\b${pkgName}\\.`).test(codeAfterImports);
-
-        if (!isUsed) {
-          const lineStart = currentPos;
-          const lineEnd = currentPos + line.length;
-          unusedImports.push({
-            path: pkgPath,
-            range: new vscode.Range(
-              document.positionAt(lineStart),
-              document.positionAt(lineEnd + 1),
-            ),
-          });
-        }
-      }
-
-      currentPos += line.length + 1;
-    }
-
-    return unusedImports;
-  }
-
-  private createInterfaceToAnyActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-    text: string,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-
-    // Convert interface{} to any
-    if (text.includes("interface{}")) {
-      const convertAction = new vscode.CodeAction(
-        "Convert interface{} to any",
-        vscode.CodeActionKind.Refactor,
-      );
-      convertAction.edit = new vscode.WorkspaceEdit();
-      const newText = text.replace(/interface\{\}/g, "any");
-      convertAction.edit.replace(document.uri, range, newText);
-      actions.push(convertAction);
-    }
-
-    // Convert any to interface{} (reverse)
-    if (text.includes("any") && !text.includes("any(")) {
-      const convertAction = new vscode.CodeAction(
-        "Convert any to interface{}",
-        vscode.CodeActionKind.Refactor,
-      );
-      convertAction.edit = new vscode.WorkspaceEdit();
-      const newText = text.replace(/\bany\b/g, "interface{}");
-      convertAction.edit.replace(document.uri, range, newText);
-      actions.push(convertAction);
-    }
-
-    return actions;
-  }
-
-  private createIterateActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-    text: string,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-
-    // If we have a variable name, generate for loop
-    const wordMatch = text.match(/^\w+$/);
-    if (wordMatch) {
-      const varName = wordMatch[0];
-
-      // For range loop
-      const forRangeAction = new vscode.CodeAction(
-        `Iterate over ${varName} with range`,
-        vscode.CodeActionKind.Refactor,
-      );
-      forRangeAction.edit = new vscode.WorkspaceEdit();
-      const indent =
-        document.lineAt(range.start.line).text.match(/^\s*/)?.[0] || "";
-      const forLoop = `for i, v := range ${varName} {\n${indent}\t\n${indent}}`;
-      forRangeAction.edit.replace(document.uri, range, forLoop);
-      actions.push(forRangeAction);
-
-      // For loop with index
-      const forIndexAction = new vscode.CodeAction(
-        `Iterate over ${varName} with index`,
-        vscode.CodeActionKind.Refactor,
-      );
-      forIndexAction.edit = new vscode.WorkspaceEdit();
-      const forIndexLoop = `for i := 0; i < len(${varName}); i++ {\n${indent}\t\n${indent}}`;
-      forIndexAction.edit.replace(document.uri, range, forIndexLoop);
-      actions.push(forIndexAction);
-    }
-
-    return actions;
-  }
-
-  private createAnonymousFuncActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-
-    try {
-      const line = document.lineAt(range.start.line).text;
-
-      // Convert single-line anonymous func to multiline
-      if (line.match(/func\([^)]*\)\s*\{[^}]+\}\s*\(/)) {
-        const convertAction = new vscode.CodeAction(
-          "Convert to multiline anonymous function",
-          vscode.CodeActionKind.Refactor,
-        );
-        // This would need more complex parsing
-        convertAction.disabled = {
-          reason: "Complex parsing required - use gofmt instead",
-        };
-        actions.push(convertAction);
-      }
-    } catch (error) {
-      // Ignore
-    }
-
-    return actions;
-  }
-
-  private createUnwrapElseActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-
-    try {
-      const line = document.lineAt(range.start.line).text;
-
-      // Detect if else pattern and offer to unwrap
-      if (line.includes("if") && line.includes("{")) {
-        // Look ahead for else block
-        let hasElse = false;
-        for (
-          let i = range.start.line + 1;
-          i < Math.min(range.start.line + 50, document.lineCount);
-          i++
-        ) {
-          const nextLine = document.lineAt(i).text;
-          if (nextLine.includes("} else")) {
-            hasElse = true;
-            break;
-          }
-          if (nextLine.includes("func ")) {
-            break;
-          }
-        }
-
-        if (hasElse) {
-          const unwrapAction = new vscode.CodeAction(
-            "Unwrap else (add return in if block)",
-            vscode.CodeActionKind.Refactor,
-          );
-          unwrapAction.disabled = {
-            reason: "Requires full AST parsing - use manual refactoring",
-          };
-          actions.push(unwrapAction);
-        }
-      }
-    } catch (error) {
-      // Ignore
-    }
-
-    return actions;
-  }
-
   private async createGetterSetterActions(
     document: vscode.TextDocument,
     range: vscode.Range,
@@ -1056,60 +539,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     return -1;
   }
 
-  private createInlineVariableActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-    text: string,
-  ): vscode.CodeAction[] {
-    const actions: vscode.CodeAction[] = [];
-    const line = document.lineAt(range.start.line).text;
-
-    // Detect variable declaration: varName := value or var varName = value
-    const varDeclMatch =
-      line.match(/\b(\w+)\s*:=\s*(.+)/) || line.match(/var\s+(\w+)\s*=\s*(.+)/);
-
-    if (varDeclMatch) {
-      const varName = varDeclMatch[1];
-      const value = varDeclMatch[2].replace(/;$/, "").trim();
-
-      const inlineAction = new vscode.CodeAction(
-        `Inline variable '${varName}'`,
-        vscode.CodeActionKind.Source,
-      );
-
-      // Find all usages of the variable and replace with value
-      const fullText = document.getText();
-      const lines = fullText.split("\n");
-      const currentLineNum = range.start.line;
-
-      // Simple heuristic: replace in same function/block
-      let replacementCount = 0;
-      const regex = new RegExp(`\\b${varName}\\b`, "g");
-
-      for (
-        let i = currentLineNum + 1;
-        i < lines.length && i < currentLineNum + 50;
-        i++
-      ) {
-        if (regex.test(lines[i])) {
-          replacementCount++;
-        }
-      }
-
-      if (replacementCount > 0) {
-        inlineAction.edit = new vscode.WorkspaceEdit();
-        // Note: This is a simplified implementation
-        // A complete implementation would track all variable usages
-        inlineAction.disabled = {
-          reason: "Use gopls inline refactoring for better accuracy",
-        };
-        actions.push(inlineAction);
-      }
-    }
-
-    return actions;
-  }
-
   private createSplitFieldActions(
     document: vscode.TextDocument,
     range: vscode.Range,
@@ -1192,14 +621,17 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       const l = document.lineAt(i).text;
       // Count braces going backwards (reverse direction)
       for (let c = l.length - 1; c >= 0; c--) {
-        if (l[c] === "}") {braceCount++;}
-        else if (l[c] === "{") {
+        if (l[c] === "}") {
+          braceCount++;
+        } else if (l[c] === "{") {
           if (braceCount > 0) {
             braceCount--;
           } else {
             // This opening brace is the one we're inside
             const m = l.match(/type\s+(\w+)\s+struct\s*\{/);
-            if (m) {return m[1];}
+            if (m) {
+              return m[1];
+            }
             return undefined;
           }
         }
@@ -1618,89 +1050,6 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       const newLine = line.replace(/(\w+)\s*=/, "$1 :=");
       convertAction.edit.replace(document.uri, lineRange, newLine);
       actions.push(convertAction);
-    }
-
-    return actions;
-  }
-
-  private async createExtractEmbeddedTypeActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-  ): Promise<vscode.CodeAction[]> {
-    const actions: vscode.CodeAction[] = [];
-
-    try {
-      const symbols = await vscode.commands.executeCommand<
-        vscode.DocumentSymbol[]
-      >("vscode.executeDocumentSymbolProvider", document.uri);
-
-      if (!symbols) {
-        return actions;
-      }
-
-      const symbol = this.findSymbolAtPosition(symbols, range.start);
-
-      if (symbol && symbol.kind === vscode.SymbolKind.Struct) {
-        // Look for embedded fields (fields without explicit names)
-        const text = document.getText(symbol.range);
-        const embeddedMatch = text.match(/^\s*(\w+)\s*$/m);
-
-        if (embeddedMatch) {
-          const extractAction = new vscode.CodeAction(
-            `Extract embedded type (Go Assistant)`,
-            vscode.CodeActionKind.Refactor,
-          );
-
-          extractAction.disabled = {
-            reason: "Complex refactoring - requires type analysis",
-          };
-
-          actions.push(extractAction);
-        }
-      }
-    } catch (error) {
-      console.error("Error creating extract embedded type actions:", error);
-    }
-
-    return actions;
-  }
-
-  private async createInlineEmbeddedActions(
-    document: vscode.TextDocument,
-    range: vscode.Range,
-  ): Promise<vscode.CodeAction[]> {
-    const actions: vscode.CodeAction[] = [];
-
-    try {
-      const symbols = await vscode.commands.executeCommand<
-        vscode.DocumentSymbol[]
-      >("vscode.executeDocumentSymbolProvider", document.uri);
-
-      if (!symbols) {
-        return actions;
-      }
-
-      const symbol = this.findSymbolAtPosition(symbols, range.start);
-
-      if (symbol && symbol.kind === vscode.SymbolKind.Struct) {
-        const text = document.getText(symbol.range);
-        const embeddedMatch = text.match(/^\s*(\w+)\s*$/m);
-
-        if (embeddedMatch) {
-          const inlineAction = new vscode.CodeAction(
-            `Inline embedded struct/interface`,
-            vscode.CodeActionKind.RefactorInline,
-          );
-
-          inlineAction.disabled = {
-            reason: "Complex refactoring - requires type analysis",
-          };
-
-          actions.push(inlineAction);
-        }
-      }
-    } catch (error) {
-      console.error("Error creating inline embedded actions:", error);
     }
 
     return actions;
@@ -2571,18 +1920,26 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       cursorCol: number | null,
     ): { typeName: string; typeNameCol: number } | null => {
       const structLiteralMatch = lineText.match(/(&?)([A-Za-z_]\w*)\s*\{/);
-      if (!structLiteralMatch) {return null;}
+      if (!structLiteralMatch) {
+        return null;
+      }
 
       const typeName = structLiteralMatch[2];
-      if (goKeywords.has(typeName)) {return null;}
-      if (!/^[A-Z]/.test(typeName)) {return null;}
+      if (goKeywords.has(typeName)) {
+        return null;
+      }
+      if (!/^[A-Z]/.test(typeName)) {
+        return null;
+      }
 
       if (cursorCol !== null) {
         const literalStart = structLiteralMatch.index ?? 0;
         const closingBrace = lineText.indexOf("}", literalStart);
         const literalEnd =
           closingBrace >= 0 ? closingBrace + 1 : lineText.length;
-        if (cursorCol < literalStart || cursorCol > literalEnd) {return null;}
+        if (cursorCol < literalStart || cursorCol > literalEnd) {
+          return null;
+        }
       }
 
       const typeNameCol = lineText.indexOf(
@@ -2622,7 +1979,9 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       }
     }
 
-    if (!result) {return actions;}
+    if (!result) {
+      return actions;
+    }
 
     const { typeName, typeNameCol } = result;
 
@@ -2803,9 +2162,28 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       }
 
       // ── Build variable names ─────────────────────────────────────────────────
-      const varNames = returnTypes.map((r) =>
-        r.name && r.name !== "_" ? r.name : this.typeToVarName(r.type),
-      );
+      // For unnamed returns, fall back to a name derived from the calling method:
+      //   pkg.Method()   → method,  MethodBase() → base
+      // bool without a name always becomes "ok".
+      const methodVarName = this.methodNameToVarName(funcName);
+      const varNames = returnTypes.map((r, idx) => {
+        if (r.name && r.name !== "_") {
+          return r.name;
+        }
+        if (r.type === "bool") {
+          return "ok";
+        }
+        if (r.type === "error") {
+          return "err";
+        }
+        // For the first non-error unnamed return, prefer the method-name-derived
+        // variable name (e.g. GetUser → user, Recv → recv) when there are
+        // multiple returns (otherwise we'd be shadowing a lone error return).
+        if (idx === 0 && returnTypes.length > 1 && methodVarName) {
+          return methodVarName;
+        }
+        return this.typeToVarName(r.type);
+      });
       const errVar = varNames[varNames.length - 1];
       const callExpr = trimmed;
       const lineRange = document.lineAt(range.start.line).range;
@@ -2821,8 +2199,9 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
 
       const action = new vscode.CodeAction(
         "Handle error (Go Assistant)",
-        vscode.CodeActionKind.Refactor,
+        vscode.CodeActionKind.QuickFix,
       );
+      action.isPreferred = true;
       action.edit = new vscode.WorkspaceEdit();
       action.edit.replace(document.uri, lineRange, newContent);
       actions.push(action);
@@ -2860,10 +2239,13 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     const oneLine = goBlock.replace(/\n\s*/g, " ").trim();
 
     // Match:  func [receiver] FuncName([params]) [returns]
+    //   or:   func [receiver] pkg.FuncName([params]) [returns]
     // Receiver can contain brackets for generics: (*T[A, B])
     // We capture everything after the parameter closing paren as "tail".
+    // Note: gopls sometimes emits a package-qualified name (e.g. "mongo.Connect")
+    // so we use [\w.]+ instead of \w+ for the function name.
     const funcRe =
-      /^func\s+(?:\([^)]*(?:\([^)]*\)[^)]*)*\)\s+)?\w+\s*\(([^)(]|\([^)]*\))*\)\s*(.*)/;
+      /^func\s+(?:\([^)]*(?:\([^)]*\)[^)]*)*\)\s+)?[\w.]+\s*\(([^)(]|\([^)]*\))*\)\s*(.*)/;
     const funcMatch = oneLine.match(funcRe);
     if (!funcMatch) {
       console.log(
@@ -3002,11 +2384,43 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       return "f";
     }
 
+    // Complex / structural types
+    if (base.startsWith("map[")) {
+      return "m";
+    }
+    if (base.startsWith("chan ") || base === "chan") {
+      return "ch";
+    }
+    if (base === "interface{}" || base === "any") {
+      return "v";
+    }
+
     // Generic fallback: lower-case first letter
     if (!base) {
       return "v";
     }
     return base.charAt(0).toLowerCase() + base.slice(1);
+  }
+
+  /**
+   * Derives a variable name from a function/method name.
+   * "package.Method" → "method"
+   * "MethodBase"     → "base"  (last PascalCase word, lowercased)
+   * "get"            → "get"
+   */
+  private methodNameToVarName(funcName: string): string {
+    // Strip package qualifier: "pkg.Method" → "Method"
+    const dotIdx = funcName.lastIndexOf(".");
+    const name = dotIdx >= 0 ? funcName.slice(dotIdx + 1) : funcName;
+    if (!name) {
+      return "";
+    }
+    // Split PascalCase/camelCase into words, take the last word
+    const words = name.match(
+      /[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+/g,
+    ) ?? [name];
+    const last = words[words.length - 1];
+    return last.charAt(0).toLowerCase() + last.slice(1);
   }
 
   private createRunDebugTestActions(
