@@ -14,13 +14,43 @@ import { GoInlineValuesProvider } from "./goInlineValuesProvider";
 import { findGoModForWorkspace, getGoModuleRoot } from "./goModFinder";
 import { GoProtoCodeLensProvider } from "./goProtoCodeLensProvider";
 import { GoReferencesViewProvider, SymbolInfo } from "./goReferencesView";
+import { GoTestResultsPanel } from "./goTestResultsPanel";
 import {
   AVAILABLE_TEST_FLAGS,
   GoTestsViewProvider,
   PROFILING_MODES,
   ProfilingMode,
+  TestEventJSON,
   TestRunEntry,
 } from "./goTestsView";
+
+function isVerboseLoggingEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("goAssistant.logging")
+    .get<boolean>("verbose", false);
+}
+
+function debugLog(message: string): void {
+  if (isVerboseLoggingEnabled()) {
+    console.log(message);
+  }
+}
+
+const testRunnerOutputChannel = vscode.window.createOutputChannel(
+  "Go Assistant Test Runner",
+);
+
+function logTestRunner(
+  message: string,
+  level: "info" | "error" = "info",
+): void {
+  testRunnerOutputChannel.appendLine(message);
+  if (level === "error") {
+    console.error(`[go-assistant:test-runner] ${message}`);
+  } else {
+    console.log(`[go-assistant:test-runner] ${message}`);
+  }
+}
 
 /**
  * Determine pass/fail status for a single test from `go test` output.
@@ -87,6 +117,235 @@ function coverageFilePath(cwd: string): string {
 function sendCmd(terminal: vscode.Terminal, dir: string, cmd: string): void {
   terminal.sendText(`cd "${dir}"`);
   terminal.sendText(cmd);
+}
+
+/**
+ * Execute tests with -json flag and parse output in real-time.
+ * Calls processEvent for each JSON event without showing terminal.
+ */
+async function runTestsWithJSON(
+  cwd: string,
+  args: string[],
+  testsViewProvider: GoTestsViewProvider,
+  onEvent?: (event: TestEventJSON) => void,
+  clearPreviousResults = true,
+): Promise<{ code: number | null; rawOutput: string }> {
+  return new Promise<{ code: number | null; rawOutput: string }>(
+    (resolve, reject) => {
+      let parsedEventCount = 0;
+      let sampledEventLogs = 0;
+      const verboseLogs = isVerboseLoggingEnabled();
+      if (verboseLogs) {
+        testRunnerOutputChannel.show(true);
+      }
+      logTestRunner(`[run] cwd=${cwd} cmd=go test -json ${args.join(" ")}`);
+
+      if (clearPreviousResults) {
+        testsViewProvider.clearTestResults();
+      }
+
+      const { spawn } = require("child_process");
+      const proc = spawn("go", ["test", "-json", ...args], {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let buffer = "";
+      let rawOutput = "";
+
+      proc.stdout.on("data", (chunk: Buffer) => {
+        buffer += chunk.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+          rawOutput += `${line}\n`;
+          const event = testsViewProvider.parseTestEventJSON(line);
+          if (event) {
+            parsedEventCount += 1;
+            if (sampledEventLogs < 15) {
+              logTestRunner(
+                `[event] action=${event.Action} package=${event.Package} test=${event.Test ?? "<none>"}`,
+              );
+              sampledEventLogs += 1;
+            }
+            testsViewProvider.processTestEvent(event);
+            onEvent?.(event);
+          } else {
+            if (verboseLogs) {
+              logTestRunner(`[stdout/non-json] ${line}`);
+            }
+          }
+        }
+      });
+
+      proc.stderr.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        rawOutput += text;
+        const lines = text.split(/\r?\n/).filter((line) => line.trim().length);
+        for (const line of lines) {
+          logTestRunner(`[stderr] ${line}`, "error");
+          testsViewProvider.appendRunnerOutput(line, cwd);
+        }
+      });
+
+      proc.on("close", (code: number) => {
+        // Process any remaining buffer
+        if (buffer.trim()) {
+          rawOutput += `${buffer}\n`;
+          const event = testsViewProvider.parseTestEventJSON(buffer);
+          if (event) {
+            parsedEventCount += 1;
+            if (sampledEventLogs < 15) {
+              logTestRunner(
+                `[event] action=${event.Action} package=${event.Package} test=${event.Test ?? "<none>"}`,
+              );
+              sampledEventLogs += 1;
+            }
+            testsViewProvider.processTestEvent(event);
+            onEvent?.(event);
+          } else {
+            if (verboseLogs) {
+              logTestRunner(`[stdout/non-json] ${buffer}`);
+            }
+          }
+        }
+
+        if (parsedEventCount === 0 && rawOutput.trim()) {
+          testRunnerOutputChannel.show(true);
+          testsViewProvider.appendRunnerOutput(rawOutput, cwd);
+        }
+
+        if (testsViewProvider.getAllTestResults().length === 0) {
+          const fallbackMessage =
+            `[fallback] no mapped test results (parsedEvents=${parsedEventCount}, exitCode=${String(code)})` +
+            (rawOutput.trim() ? `\n${rawOutput}` : "\n(no raw output)");
+          testsViewProvider.appendRunnerOutput(fallbackMessage, cwd);
+          logTestRunner("[fallback] injected synthetic runner result");
+        }
+
+        testsViewProvider.appendRunnerOutput(
+          `[run summary] exitCode=${String(code)} parsedEvents=${parsedEventCount}`,
+          cwd,
+        );
+
+        logTestRunner(
+          `[done] cwd=${cwd} exitCode=${String(code)} parsedEvents=${parsedEventCount}`,
+        );
+
+        resolve({ code, rawOutput });
+      });
+
+      proc.on("error", (err: Error) => {
+        logTestRunner(`[spawn-error] ${err.message}`, "error");
+        testsViewProvider.appendRunnerOutput(err.message, cwd);
+        reject(err);
+      });
+    },
+  );
+}
+
+function splitGoArgs(flags: string): string[] {
+  const args: string[] = [];
+  const regex = /"([^"]*)"|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(flags)) !== null) {
+    args.push(match[1] ?? match[2]);
+  }
+  return args;
+}
+
+function applyCoverageFromProfile(
+  coverageFile: string,
+  cwd: string,
+  testsViewProvider: GoTestsViewProvider,
+): void {
+  if (!fs.existsSync(coverageFile)) {
+    return;
+  }
+
+  const content = fs.readFileSync(coverageFile, "utf-8");
+  const lines = content.split("\n").filter((line) => line.trim() !== "");
+  if (lines.length <= 1) {
+    return;
+  }
+
+  const fileTotals = new Map<string, { covered: number; total: number }>();
+  const packageTotals = new Map<string, { covered: number; total: number }>();
+  const knownFiles = testsViewProvider
+    .getPackages()
+    .flatMap((pkg) => pkg.files.map((file) => file.file));
+
+  const resolveCoveredFile = (fileRef: string): string => {
+    if (path.isAbsolute(fileRef)) {
+      return path.normalize(fileRef);
+    }
+
+    const byCwd = path.normalize(path.resolve(cwd, fileRef));
+    if (fs.existsSync(byCwd)) {
+      return byCwd;
+    }
+
+    const normalizedRef = fileRef.replace(/\\/g, "/");
+    const suffix = `/${normalizedRef}`;
+    const matched = knownFiles.find((filePath) => {
+      const normalizedFilePath = filePath.replace(/\\/g, "/");
+      return normalizedFilePath.endsWith(suffix);
+    });
+
+    return matched ? path.normalize(matched) : byCwd;
+  };
+
+  for (const line of lines.slice(1)) {
+    const m = line.match(/^(.+?):\d+\.\d+,\d+\.\d+\s+(\d+)\s+(\d+)$/);
+    if (!m) {
+      continue;
+    }
+
+    const fileRef = m[1];
+    const numStmt = Number.parseInt(m[2], 10);
+    const count = Number.parseInt(m[3], 10);
+    if (!Number.isFinite(numStmt) || numStmt <= 0) {
+      continue;
+    }
+
+    const absFile = resolveCoveredFile(fileRef);
+    const pkg = path.dirname(absFile);
+
+    const fileAcc = fileTotals.get(absFile) ?? { covered: 0, total: 0 };
+    fileAcc.total += numStmt;
+    if (count > 0) {
+      fileAcc.covered += numStmt;
+    }
+    fileTotals.set(absFile, fileAcc);
+
+    const pkgAcc = packageTotals.get(pkg) ?? { covered: 0, total: 0 };
+    pkgAcc.total += numStmt;
+    if (count > 0) {
+      pkgAcc.covered += numStmt;
+    }
+    packageTotals.set(pkg, pkgAcc);
+  }
+
+  for (const [filePath, totals] of fileTotals.entries()) {
+    if (totals.total > 0) {
+      testsViewProvider.setFileCoverage(
+        filePath,
+        (totals.covered / totals.total) * 100,
+      );
+    }
+  }
+  for (const [packagePath, totals] of packageTotals.entries()) {
+    if (totals.total > 0) {
+      testsViewProvider.setPackageCoverage(
+        packagePath,
+        (totals.covered / totals.total) * 100,
+      );
+    }
+  }
 }
 
 /**
@@ -195,7 +454,7 @@ function getCompleteDeclarationText(
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-  console.log("Go Assistant extension is now active!");
+  debugLog("Go Assistant extension is now active!");
 
   // Initialize References View Provider
   const referencesViewProvider = new GoReferencesViewProvider();
@@ -220,7 +479,27 @@ export function activate(context: vscode.ExtensionContext) {
     showCollapseAll: true,
   });
 
+  const testResultsViewProvider = new GoTestResultsPanel(testsViewProvider);
+  const testResultsViewDisposable = vscode.window.registerWebviewViewProvider(
+    GoTestResultsPanel.viewId,
+    testResultsViewProvider,
+    {
+      webviewOptions: { retainContextWhenHidden: true },
+    },
+  );
+
+  const showTestOutputPanel = (selected?: {
+    source: "current" | "history";
+    testName: string;
+    packagePath: string;
+    runId?: string;
+  }) => {
+    void testResultsViewProvider.reveal(selected);
+  };
+
   context.subscriptions.push(testsView);
+  context.subscriptions.push(testResultsViewDisposable);
+  context.subscriptions.push(testResultsViewProvider);
 
   // Discover tests on activation
   const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
@@ -537,79 +816,139 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        const terminal = vscode.window.createTerminal({
-          name: "Go Tests",
-          cwd: root,
-        });
-        terminal.show();
-
         const coverageFile = coverageFilePath(root);
-        // Profile flags are incompatible with multi-package runs (./...).
-        // Profiling is only applied when running a single package, file or test.
         const extraFlags = testsViewProvider.buildExtraFlags(
           false,
           coverageFile,
         );
+        const goArgs = [...splitGoArgs(extraFlags), "./..."];
 
-        exec(
-          `go test ${extraFlags} ./...`,
-          { cwd: root },
-          (error: any, stdout: string, stderr: string) => {
-            const output = stdout + stderr;
-            const historyEntries: TestRunEntry[] = [];
-            // Update all known tests belonging to this root
-            const rootModules =
-              modules.length > 0
-                ? modules.filter((m) => m.moduleRoot === root)
-                : [];
-            const allPkgs =
-              rootModules.length > 0
-                ? rootModules.flatMap((m) => m.packages)
-                : testsViewProvider.getPackages();
-            for (const pkg of allPkgs) {
-              for (const file of pkg.files) {
-                for (const test of file.tests) {
-                  const duration = parseTestDuration(output, test.name);
-                  const status = detectTestStatus(output, test.name);
-                  testsViewProvider.updateTestStatus(
-                    test.name,
-                    pkg.packagePath,
-                    status,
-                    duration,
-                  );
-                  historyEntries.push({
-                    testName: test.name,
-                    packagePath: pkg.packagePath,
-                    file: test.file,
-                    status: status === "unknown" ? "unknown" : status,
-                    duration,
-                  });
-                }
+        // Run tests with -json flag in background (no terminal shown)
+        try {
+          showTestOutputPanel();
+          const runResult = await runTestsWithJSON(
+            root,
+            goArgs,
+            testsViewProvider,
+            (event) => {
+              testsViewProvider.refresh();
+            },
+            true,
+          );
+          testsViewProvider.finalizeRunningStatuses(
+            runResult.code === 0 ? "pass" : "fail",
+          );
+
+          if (testsViewProvider.isFlagActive("coverprofile")) {
+            applyCoverageFromProfile(coverageFile, root, testsViewProvider);
+            const loaded =
+              await coverageDecorator.loadCoverageFromFile(coverageFile);
+            if (loaded) {
+              coverageDecorator.applyDecorationsToAllEditors();
+            }
+          }
+
+          const historyEntries: TestRunEntry[] = [];
+          // Update all known tests belonging to this root
+          const rootModules =
+            modules.length > 0
+              ? modules.filter((m) => m.moduleRoot === root)
+              : [];
+          const allPkgs =
+            rootModules.length > 0
+              ? rootModules.flatMap((m) => m.packages)
+              : testsViewProvider.getPackages();
+          for (const pkg of allPkgs) {
+            for (const file of pkg.files) {
+              for (const test of file.tests) {
+                const testOutput = testsViewProvider.getTestOutput(
+                  test.name,
+                  pkg.packagePath,
+                );
+                const status = test.status || "unknown";
+                const duration = test.duration;
+                historyEntries.push({
+                  testName: test.name,
+                  packagePath: pkg.packagePath,
+                  file: test.file,
+                  status: status as "pass" | "fail" | "unknown",
+                  duration,
+                  output: testOutput?.output.join(""),
+                  packageCoverage:
+                    testsViewProvider.getPackageCoverage(pkg.packagePath) ??
+                    undefined,
+                  fileCoverage:
+                    testsViewProvider.getFileCoverage(test.file) ?? undefined,
+                });
               }
             }
+          }
 
-            testsViewProvider.addToHistory("all tests", historyEntries);
-
-            // Discover subtests from output
-            testsViewProvider.updateSubTestsFromOutput(output);
-
-            setTimeout(() => {
-              coverageDecorator
-                .loadCoverageFromFile(coverageFile)
-                .then((loaded) => {
-                  if (loaded) {
-                    coverageDecorator.applyDecorationsToAllEditors();
-                    vscode.window.showInformationMessage(
-                      "Coverage applied to all files",
-                    );
-                  }
-                });
-            }, 500);
-          },
-        );
-
-        sendCmd(terminal, root, `go test ${extraFlags} ./...`);
+          testsViewProvider.addToHistory("all tests", historyEntries);
+          showTestOutputPanel();
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Failed to run tests: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
+    },
+  );
+
+  const openTestLogCommand = vscode.commands.registerCommand(
+    "go-assistant.openTestLog",
+    async (...args: any[]) => {
+      const item = args[0];
+      let selected:
+        | {
+            source: "current" | "history";
+            testName: string;
+            packagePath: string;
+            runId?: string;
+          }
+        | undefined;
+
+      if (item?.historyEntry) {
+        selected = {
+          source: "history",
+          testName: item.historyEntry.testName,
+          packagePath: item.historyEntry.packagePath,
+          runId: item.historyRun?.id,
+        };
+      } else if (item?.resultTest) {
+        selected = {
+          source: "current",
+          testName: item.resultTest.testName,
+          packagePath: item.resultTest.packagePath,
+        };
+      } else if (typeof args[0] === "string" && typeof args[1] === "string") {
+        selected = {
+          source: "current",
+          testName: args[0],
+          packagePath: args[1],
+        };
+      } else if (item?.testInfo) {
+        selected = {
+          source: "current",
+          testName: item.testInfo.name,
+          packagePath: item.testInfo.packagePath,
+        };
+      } else if (item?.subTestInfo) {
+        selected = {
+          source: "current",
+          testName: item.subTestInfo.fullName,
+          packagePath: item.subTestInfo.packagePath,
+        };
+      }
+
+      if (!selected) {
+        vscode.window.showInformationMessage(
+          "No log available for this test yet.",
+        );
+        return;
+      }
+
+      showTestOutputPanel(selected);
     },
   );
 
@@ -701,7 +1040,7 @@ export function activate(context: vscode.ExtensionContext) {
             return f.label;
           } // e.g. "Coverage Profile (save to file)"
           return f.promptForValue && newValues[id]
-            ? `${f.flag}="${newValues[id]}"`
+            ? `${f.flag}=${newValues[id]}`
             : f.flag;
         })
         .filter(Boolean)
@@ -712,6 +1051,33 @@ export function activate(context: vscode.ExtensionContext) {
           ? `Active test flags: ${summary}`
           : "No test flags active — using go test defaults",
       );
+    },
+  );
+
+  const searchTestsCommand = vscode.commands.registerCommand(
+    "go-assistant.searchTests",
+    async () => {
+      const quickPick = vscode.window.createQuickPick();
+      quickPick.title = "Search Tests";
+      quickPick.placeholder = "Type package, file or test name";
+      quickPick.value = testsViewProvider.getSearchQuery();
+      quickPick.onDidChangeValue((value) => {
+        testsViewProvider.setSearchQuery(value);
+      });
+      quickPick.onDidAccept(() => {
+        quickPick.hide();
+      });
+      quickPick.onDidHide(() => {
+        quickPick.dispose();
+      });
+      quickPick.show();
+    },
+  );
+
+  const clearTestsSearchCommand = vscode.commands.registerCommand(
+    "go-assistant.clearTestsSearch",
+    () => {
+      testsViewProvider.clearSearchQuery();
     },
   );
 
@@ -744,97 +1110,69 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
 
-      const terminal = vscode.window.createTerminal({
-        name: `Go Tests - ${item.moduleInfo.moduleName}`,
-        cwd: moduleRoot,
-      });
-      terminal.show();
-
       const coverageFile = coverageFilePath(moduleRoot);
-      // Profile flags are incompatible with multi-package runs (./...).
-      // Profiling is only applied when running a single package, file or test.
       const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
+      const goArgs = [...splitGoArgs(extraFlags), "./..."];
 
-      exec(
-        `go test ${extraFlags} ./...`,
-        { cwd: moduleRoot },
-        (error: any, stdout: string, stderr: string) => {
-          const output = stdout + stderr;
-          const historyEntries: TestRunEntry[] = [];
+      try {
+        showTestOutputPanel();
+        const result = await runTestsWithJSON(
+          moduleRoot,
+          goArgs,
+          testsViewProvider,
+          () => testsViewProvider.refresh(),
+          true,
+        );
+        testsViewProvider.finalizeRunningStatuses(
+          result.code === 0 ? "pass" : "fail",
+        );
 
-          for (const pkg of item.moduleInfo.packages) {
-            for (const file of pkg.files) {
-              for (const test of file.tests) {
-                const duration = parseTestDuration(output, test.name);
-                const status2 = detectTestStatus(output, test.name);
-                testsViewProvider.updateTestStatus(
-                  test.name,
-                  pkg.packagePath,
-                  status2,
-                  duration,
-                );
-                historyEntries.push({
-                  testName: test.name,
-                  packagePath: pkg.packagePath,
-                  file: test.file,
-                  status: status2 === "unknown" ? "unknown" : status2,
-                  duration,
-                });
+        if (testsViewProvider.isFlagActive("coverprofile")) {
+          applyCoverageFromProfile(coverageFile, moduleRoot, testsViewProvider);
+          const loaded =
+            await coverageDecorator.loadCoverageFromFile(coverageFile);
+          if (loaded) {
+            coverageDecorator.applyDecorationsToAllEditors();
+          }
+        }
 
-                // Sub-tests
-                if (test.subTests) {
-                  for (const sub of test.subTests) {
-                    const subDuration = parseTestDuration(output, sub.fullName);
-                    const subPass = new RegExp(
-                      `--- PASS: ${sub.fullName.replace(/\//g, "/")}`,
-                      "m",
-                    ).test(output);
-                    const subFail = new RegExp(
-                      `--- FAIL: ${sub.fullName.replace(/\//g, "/")}`,
-                      "m",
-                    ).test(output);
-                    const subStatus = subPass
-                      ? "pass"
-                      : subFail
-                        ? "fail"
-                        : "unknown";
-                    testsViewProvider.updateSubTestStatus(
-                      test.name,
-                      sub.fullName,
-                      pkg.packagePath,
-                      subStatus,
-                      subDuration,
-                    );
-                  }
-                }
-              }
+        const historyEntries: TestRunEntry[] = [];
+        for (const pkg of item.moduleInfo.packages) {
+          for (const file of pkg.files) {
+            for (const test of file.tests) {
+              historyEntries.push({
+                testName: test.name,
+                packagePath: pkg.packagePath,
+                file: test.file,
+                status: (test.status ?? "unknown") as
+                  | "pass"
+                  | "fail"
+                  | "unknown",
+                duration: test.duration,
+                output: testsViewProvider
+                  .getTestOutput(test.name, pkg.packagePath)
+                  ?.output.join(""),
+                packageCoverage:
+                  testsViewProvider.getPackageCoverage(pkg.packagePath) ??
+                  undefined,
+                fileCoverage:
+                  testsViewProvider.getFileCoverage(test.file) ?? undefined,
+              });
             }
           }
+        }
 
-          testsViewProvider.addToHistory(
-            item.moduleInfo.moduleName,
-            historyEntries,
-          );
-
-          // Discover subtests from output
-          testsViewProvider.updateSubTestsFromOutput(output);
-
-          setTimeout(() => {
-            coverageDecorator
-              .loadCoverageFromFile(coverageFile)
-              .then((loaded) => {
-                if (loaded) {
-                  coverageDecorator.applyDecorationsToAllEditors();
-                  vscode.window.showInformationMessage(
-                    "Coverage applied to editors",
-                  );
-                }
-              });
-          }, 500);
-        },
-      );
-
-      sendCmd(terminal, moduleRoot, `go test ${extraFlags} ./...`);
+        testsViewProvider.addToHistory(
+          item.moduleInfo.moduleName,
+          historyEntries,
+        );
+        testsViewProvider.updateSubTestsFromOutput(result.rawOutput);
+        showTestOutputPanel();
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to run module tests: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
   );
 
@@ -863,12 +1201,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
 
-      const terminal = vscode.window.createTerminal({
-        name: `Go Tests - ${item.packageInfo.packageName}`,
-        cwd: packagePath,
-      });
-      terminal.show();
-
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(false, coverageFile);
       const profileArgs = getProfileArgs(item.packageInfo.packageName);
@@ -885,89 +1217,80 @@ export function activate(context: vscode.ExtensionContext) {
         profileChannel.show(true /* preserveFocus */);
       }
 
-      exec(
-        `go test ${extraFlags}${profileArgs ? ` ${profileArgs.flag}` : ""}`,
-        { cwd: packagePath },
-        (error: any, stdout: string, stderr: string) => {
-          const output = stdout + stderr;
-          if (profileChannel) {
-            profileChannel.appendLine(output);
-          }
-          const historyEntries: TestRunEntry[] = [];
-
-          for (const file of item.packageInfo.files) {
-            for (const test of file.tests) {
-              const duration = parseTestDuration(output, test.name);
-              const status = detectTestStatus(output, test.name);
-              testsViewProvider.updateTestStatus(
-                test.name,
-                packagePath,
-                status,
-                duration,
-              );
-              historyEntries.push({
-                testName: test.name,
-                packagePath,
-                file: test.file,
-                status,
-                duration,
-              });
-
-              // Sub-tests
-              if (test.subTests) {
-                for (const sub of test.subTests) {
-                  const subDuration = parseTestDuration(output, sub.fullName);
-                  const subPass = output.includes(`--- PASS: ${sub.fullName}`);
-                  const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
-                  testsViewProvider.updateSubTestStatus(
-                    test.name,
-                    sub.fullName,
-                    packagePath,
-                    subPass ? "pass" : subFail ? "fail" : "unknown",
-                    subDuration,
-                  );
-                }
-              }
+      if (profileArgs) {
+        exec(
+          `go test ${extraFlags} ${profileArgs.flag}`,
+          { cwd: packagePath },
+          (error: any, stdout: string, stderr: string) => {
+            const output = stdout + stderr;
+            if (profileChannel) {
+              profileChannel.appendLine(output);
             }
-          }
+            if (profileArgs) {
+              showPprofNotification(
+                item.packageInfo.packageName,
+                packagePath,
+                profileArgs.file,
+                profileArgs.mode,
+              );
+            }
+          },
+        );
+        return;
+      }
 
-          testsViewProvider.addToHistory(
-            item.packageInfo.packageName,
-            historyEntries,
-          );
+      try {
+        showTestOutputPanel();
+        const result = await runTestsWithJSON(
+          packagePath,
+          splitGoArgs(extraFlags),
+          testsViewProvider,
+          () => testsViewProvider.refresh(),
+          true,
+        );
+        testsViewProvider.finalizeRunningStatuses(
+          result.code === 0 ? "pass" : "fail",
+        );
 
-          // Discover subtests from output
-          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
-
-          setTimeout(() => {
-            coverageDecorator
-              .loadCoverageFromFile(coverageFile)
-              .then((loaded) => {
-                if (loaded) {
-                  coverageDecorator.applyDecorationsToAllEditors();
-                  vscode.window.showInformationMessage(
-                    "Coverage applied to editors",
-                  );
-                }
-              });
-          }, 500);
-
-          // Profile file is now fully written — safe to offer pprof
-          if (profileArgs) {
-            showPprofNotification(
-              item.packageInfo.packageName,
+        const historyEntries: TestRunEntry[] = [];
+        for (const file of item.packageInfo.files) {
+          for (const test of file.tests) {
+            historyEntries.push({
+              testName: test.name,
               packagePath,
-              profileArgs.file,
-              profileArgs.mode,
-            );
+              file: test.file,
+              status: (test.status ?? "unknown") as "pass" | "fail" | "unknown",
+              duration: test.duration,
+              output: testsViewProvider
+                .getTestOutput(test.name, packagePath)
+                ?.output.join(""),
+              packageCoverage:
+                testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
+              fileCoverage:
+                testsViewProvider.getFileCoverage(test.file) ?? undefined,
+            });
           }
-        },
-      );
+        }
 
-      // When profiling: exec() above is the authoritative run (writes the profile).
-      // Only use the terminal for the normal (non-profiled) flow.
-      if (!profileArgs) {
-        sendCmd(terminal, packagePath, `go test ${extraFlags}`);
+        testsViewProvider.addToHistory(
+          item.packageInfo.packageName,
+          historyEntries,
+        );
+        testsViewProvider.updateSubTestsFromOutput(
+          result.rawOutput,
+          packagePath,
+        );
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        const loaded =
+          await coverageDecorator.loadCoverageFromFile(coverageFile);
+        if (loaded) {
+          coverageDecorator.applyDecorationsToAllEditors();
+        }
+        showTestOutputPanel();
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to run package tests: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     },
   );
@@ -998,12 +1321,6 @@ export function activate(context: vscode.ExtensionContext) {
         testsViewProvider.updateTestStatus(test.name, packagePath, "running");
       }
 
-      const terminal = vscode.window.createTerminal({
-        name: `Go Tests - ${fileName}`,
-        cwd: packagePath,
-      });
-      terminal.show();
-
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
       const profileArgs = getProfileArgs(fileName);
@@ -1020,87 +1337,72 @@ export function activate(context: vscode.ExtensionContext) {
         profileChannel.show(true /* preserveFocus */);
       }
 
-      exec(
-        `go test ${extraFlags}${profileArgs ? ` ${profileArgs.flag}` : ""} -run "${testPattern}"`,
-        { cwd: packagePath },
-        (error: any, stdout: string, stderr: string) => {
-          const output = stdout + stderr;
-          if (profileChannel) {
-            profileChannel.appendLine(output);
-          }
-          const historyEntries: TestRunEntry[] = [];
-
-          for (const test of item.fileInfo.tests) {
-            const duration = parseTestDuration(output, test.name);
-            const status = detectTestStatus(output, test.name);
-            testsViewProvider.updateTestStatus(
-              test.name,
-              packagePath,
-              status,
-              duration,
-            );
-            historyEntries.push({
-              testName: test.name,
-              packagePath,
-              file: test.file,
-              status,
-              duration,
-            });
-
-            // Sub-tests
-            if (test.subTests) {
-              for (const sub of test.subTests) {
-                const subDuration = parseTestDuration(output, sub.fullName);
-                const subPass = output.includes(`--- PASS: ${sub.fullName}`);
-                const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
-                testsViewProvider.updateSubTestStatus(
-                  test.name,
-                  sub.fullName,
-                  packagePath,
-                  subPass ? "pass" : subFail ? "fail" : "unknown",
-                  subDuration,
-                );
-              }
+      if (profileArgs) {
+        exec(
+          `go test ${extraFlags} ${profileArgs.flag} -run "${testPattern}"`,
+          { cwd: packagePath },
+          (error: any, stdout: string, stderr: string) => {
+            const output = stdout + stderr;
+            if (profileChannel) {
+              profileChannel.appendLine(output);
             }
-          }
-
-          testsViewProvider.addToHistory(fileName, historyEntries);
-
-          // Discover subtests from output
-          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
-
-          setTimeout(() => {
-            coverageDecorator
-              .loadCoverageFromFile(coverageFile)
-              .then((loaded) => {
-                if (loaded) {
-                  coverageDecorator.applyDecorationsToAllEditors();
-                  vscode.window.showInformationMessage(
-                    "Coverage applied to editors",
-                  );
-                }
-              });
-          }, 500);
-
-          // Profile file is now fully written — safe to offer pprof
-          if (profileArgs) {
             showPprofNotification(
               fileName,
               packagePath,
               profileArgs.file,
               profileArgs.mode,
             );
-          }
-        },
-      );
+          },
+        );
+        return;
+      }
 
-      // When profiling: exec() above is the authoritative run (writes the profile).
-      // Only use the terminal for the normal (non-profiled) flow.
-      if (!profileArgs) {
-        sendCmd(
-          terminal,
+      try {
+        showTestOutputPanel();
+        const result = await runTestsWithJSON(
           packagePath,
-          `go test ${extraFlags} -run "${testPattern}"`,
+          [...splitGoArgs(extraFlags), "-run", testPattern],
+          testsViewProvider,
+          () => testsViewProvider.refresh(),
+          true,
+        );
+        testsViewProvider.finalizeRunningStatuses(
+          result.code === 0 ? "pass" : "fail",
+        );
+
+        const historyEntries: TestRunEntry[] = [];
+        for (const test of item.fileInfo.tests) {
+          historyEntries.push({
+            testName: test.name,
+            packagePath,
+            file: test.file,
+            status: (test.status ?? "unknown") as "pass" | "fail" | "unknown",
+            duration: test.duration,
+            output: testsViewProvider
+              .getTestOutput(test.name, packagePath)
+              ?.output.join(""),
+            packageCoverage:
+              testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
+            fileCoverage:
+              testsViewProvider.getFileCoverage(test.file) ?? undefined,
+          });
+        }
+
+        testsViewProvider.addToHistory(fileName, historyEntries);
+        testsViewProvider.updateSubTestsFromOutput(
+          result.rawOutput,
+          packagePath,
+        );
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        const loaded =
+          await coverageDecorator.loadCoverageFromFile(coverageFile);
+        if (loaded) {
+          coverageDecorator.applyDecorationsToAllEditors();
+        }
+        showTestOutputPanel();
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to run file tests: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     },
@@ -1241,86 +1543,67 @@ export function activate(context: vscode.ExtensionContext) {
       // Mark test as running
       testsViewProvider.updateTestStatus(testName, packagePath, "running");
 
-      const terminal = vscode.window.createTerminal({
-        name: `Go Test - ${testName}`,
-        cwd: packagePath,
-      });
-      terminal.show();
-
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
-      exec(
-        `go test ${extraFlags} -run "^${testName}$"`,
-        { cwd: packagePath },
-        (error: any, stdout: string, stderr: string) => {
-          const output = stdout + stderr;
-          const duration = parseTestDuration(output, testName);
+      try {
+        showTestOutputPanel();
+        const result = await runTestsWithJSON(
+          packagePath,
+          [...splitGoArgs(extraFlags), "-run", `^${testName}$`],
+          testsViewProvider,
+          () => testsViewProvider.refresh(),
+          true,
+        );
+        testsViewProvider.finalizeRunningStatuses(
+          result.code === 0 ? "pass" : "fail",
+        );
 
-          const status = error ? "fail" : detectTestStatus(output, testName);
+        const current =
+          testsViewProvider
+            .getPackages()
+            .flatMap((p) => p.files)
+            .flatMap((f) => f.tests)
+            .find(
+              (t) => t.name === testName && t.packagePath === packagePath,
+            ) ?? item.testInfo;
 
-          testsViewProvider.updateTestStatus(
+        testsViewProvider.addToHistory(testName, [
+          {
             testName,
             packagePath,
-            status,
-            duration,
-          );
-          testsViewProvider.addToHistory(testName, [
-            {
-              testName,
-              packagePath,
-              file: filePath,
-              status,
-              duration,
-            },
-          ]);
+            file: filePath,
+            status: (current.status ?? "unknown") as
+              | "pass"
+              | "fail"
+              | "unknown",
+            duration: current.duration,
+            output: testsViewProvider
+              .getTestOutput(testName, packagePath)
+              ?.output.join(""),
+            packageCoverage:
+              testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
+            fileCoverage:
+              testsViewProvider.getFileCoverage(filePath) ?? undefined,
+          },
+        ]);
 
-          // Sub-tests
-          const allPkgs = testsViewProvider.getPackages();
-          const pkg = allPkgs.find((p) => p.packagePath === packagePath);
-          if (pkg) {
-            for (const f of pkg.files) {
-              const t = f.tests.find((t) => t.name === testName);
-              if (t?.subTests) {
-                for (const sub of t.subTests) {
-                  const subDuration = parseTestDuration(output, sub.fullName);
-                  const subPass = output.includes(`--- PASS: ${sub.fullName}`);
-                  const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
-                  testsViewProvider.updateSubTestStatus(
-                    testName,
-                    sub.fullName,
-                    packagePath,
-                    subPass ? "pass" : subFail ? "fail" : "unknown",
-                    subDuration,
-                  );
-                }
-              }
-            }
-          }
-
-          // Discover any new subtests from output
-          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
-
-          setTimeout(() => {
-            coverageDecorator
-              .loadCoverageFromFile(coverageFile)
-              .then((loaded) => {
-                if (loaded) {
-                  coverageDecorator.applyDecorationsToAllEditors();
-                  vscode.window.showInformationMessage(
-                    "Coverage applied to editors",
-                  );
-                }
-              });
-          }, 500);
-        },
-      );
-
-      sendCmd(
-        terminal,
-        packagePath,
-        `go test ${extraFlags} -run "^${testName}$"`,
-      );
+        testsViewProvider.updateSubTestsFromOutput(
+          result.rawOutput,
+          packagePath,
+        );
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        const loaded =
+          await coverageDecorator.loadCoverageFromFile(coverageFile);
+        if (loaded) {
+          coverageDecorator.applyDecorationsToAllEditors();
+        }
+        showTestOutputPanel();
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to run test ${testName}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
   );
 
@@ -1346,83 +1629,64 @@ export function activate(context: vscode.ExtensionContext) {
 
       testsViewProvider.updateTestStatus(testName, packagePath, "running");
 
-      const terminal = vscode.window.createTerminal({
-        name: `Go Test - ${testName}`,
-        cwd: packagePath,
-      });
-      terminal.show();
-
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
-      exec(
-        `go test ${extraFlags} -run "^${testName}$"`,
-        { cwd: packagePath },
-        (error: any, stdout: string, stderr: string) => {
-          const output = stdout + stderr;
-          const duration = parseTestDuration(output, testName);
+      try {
+        showTestOutputPanel();
+        const result = await runTestsWithJSON(
+          packagePath,
+          [...splitGoArgs(extraFlags), "-run", `^${testName}$`],
+          testsViewProvider,
+          () => testsViewProvider.refresh(),
+          true,
+        );
+        testsViewProvider.finalizeRunningStatuses(
+          result.code === 0 ? "pass" : "fail",
+        );
 
-          const status = error ? "fail" : detectTestStatus(output, testName);
+        const current = testsViewProvider
+          .getPackages()
+          .flatMap((p) => p.files)
+          .flatMap((f) => f.tests)
+          .find((t) => t.name === testName && t.packagePath === packagePath);
 
-          testsViewProvider.updateTestStatus(
+        testsViewProvider.addToHistory(testName, [
+          {
             testName,
             packagePath,
-            status,
-            duration,
-          );
-          testsViewProvider.addToHistory(testName, [
-            {
-              testName,
-              packagePath,
-              file: args.filePath,
-              status,
-              duration,
-            },
-          ]);
+            file: args.filePath,
+            status: (current?.status ?? "unknown") as
+              | "pass"
+              | "fail"
+              | "unknown",
+            duration: current?.duration,
+            output: testsViewProvider
+              .getTestOutput(testName, packagePath)
+              ?.output.join(""),
+            packageCoverage:
+              testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
+            fileCoverage:
+              testsViewProvider.getFileCoverage(args.filePath) ?? undefined,
+          },
+        ]);
 
-          // Sub-tests
-          const allPkgs = testsViewProvider.getPackages();
-          const pkg = allPkgs.find((p) => p.packagePath === packagePath);
-          if (pkg) {
-            for (const f of pkg.files) {
-              const t = f.tests.find((t) => t.name === testName);
-              if (t?.subTests) {
-                for (const sub of t.subTests) {
-                  const subDuration = parseTestDuration(output, sub.fullName);
-                  const subPass = output.includes(`--- PASS: ${sub.fullName}`);
-                  const subFail = output.includes(`--- FAIL: ${sub.fullName}`);
-                  testsViewProvider.updateSubTestStatus(
-                    testName,
-                    sub.fullName,
-                    packagePath,
-                    subPass ? "pass" : subFail ? "fail" : "unknown",
-                    subDuration,
-                  );
-                }
-              }
-            }
-          }
-
-          // Discover subtests from output
-          testsViewProvider.updateSubTestsFromOutput(output, packagePath);
-
-          setTimeout(() => {
-            coverageDecorator
-              .loadCoverageFromFile(coverageFile)
-              .then((loaded) => {
-                if (loaded) {
-                  coverageDecorator.applyDecorationsToAllEditors();
-                }
-              });
-          }, 500);
-        },
-      );
-
-      sendCmd(
-        terminal,
-        packagePath,
-        `go test ${extraFlags} -run "^${testName}$"`,
-      );
+        testsViewProvider.updateSubTestsFromOutput(
+          result.rawOutput,
+          packagePath,
+        );
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        const loaded =
+          await coverageDecorator.loadCoverageFromFile(coverageFile);
+        if (loaded) {
+          coverageDecorator.applyDecorationsToAllEditors();
+        }
+        showTestOutputPanel();
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to run test ${testName}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
   );
 
@@ -1447,21 +1711,43 @@ export function activate(context: vscode.ExtensionContext) {
       const coverageFile = coverageFilePath(cwd);
       const extraFlags = testsViewProvider.buildExtraFlags(
         !!spec.testPattern,
-        coverageFile,
+        spec.type === "all" ? undefined : coverageFile,
       );
-      const cmd =
-        spec.type === "all"
-          ? `go test ${extraFlags} ./...`
-          : spec.testPattern
-            ? `go test ${extraFlags} -run "${spec.testPattern}"`
-            : `go test ${extraFlags}`;
 
-      const terminal = vscode.window.createTerminal({
-        name: `Go Rerun - ${spec.label}`,
-        cwd,
-      });
-      terminal.show();
-      sendCmd(terminal, cwd, cmd);
+      const runArgs =
+        spec.type === "all"
+          ? [...splitGoArgs(extraFlags), "./..."]
+          : spec.testPattern
+            ? [...splitGoArgs(extraFlags), "-run", spec.testPattern]
+            : splitGoArgs(extraFlags);
+
+      try {
+        showTestOutputPanel();
+        const rerunResult = await runTestsWithJSON(
+          cwd,
+          runArgs,
+          testsViewProvider,
+          () => testsViewProvider.refresh(),
+          true,
+        );
+        testsViewProvider.finalizeRunningStatuses(
+          rerunResult.code === 0 ? "pass" : "fail",
+        );
+
+        if (spec.type !== "all") {
+          applyCoverageFromProfile(coverageFile, cwd, testsViewProvider);
+          const loaded =
+            await coverageDecorator.loadCoverageFromFile(coverageFile);
+          if (loaded) {
+            coverageDecorator.applyDecorationsToAllEditors();
+          }
+        }
+        showTestOutputPanel();
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to rerun tests: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
   );
 
@@ -1592,7 +1878,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const { parentName, fullName, packagePath, file } = item.subTestInfo;
+      const { parentName, fullName, packagePath } = item.subTestInfo;
       // Convert spaces to underscores as go test does for sub-test names
       const runPattern = `^${parentName}/${fullName.slice(parentName.length + 1).replace(/ /g, "_")}$`;
 
@@ -1613,48 +1899,37 @@ export function activate(context: vscode.ExtensionContext) {
         "running",
       );
 
-      const terminal = vscode.window.createTerminal({
-        name: `Go SubTest - ${fullName}`,
-        cwd: packagePath,
-      });
-      terminal.show();
-
       const coverageFile = coverageFilePath(packagePath);
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
-      exec(
-        `go test ${extraFlags} -run "${runPattern}"`,
-        { cwd: packagePath },
-        (error: any, stdout: string, stderr: string) => {
-          const output = stdout + stderr;
-          const subDuration = parseTestDuration(output, fullName);
-          const subPass = output.includes(`--- PASS: ${fullName}`);
-          const subFail = output.includes(`--- FAIL: ${fullName}`);
-          testsViewProvider.updateSubTestStatus(
-            parentName,
-            fullName,
-            packagePath,
-            subPass ? "pass" : subFail ? "fail" : "unknown",
-            subDuration,
-          );
-
-          setTimeout(() => {
-            coverageDecorator
-              .loadCoverageFromFile(coverageFile)
-              .then((loaded) => {
-                if (loaded) {
-                  coverageDecorator.applyDecorationsToAllEditors();
-                }
-              });
-          }, 500);
-        },
-      );
-
-      sendCmd(
-        terminal,
-        packagePath,
-        `go test ${extraFlags} -run "${runPattern}"`,
-      );
+      try {
+        showTestOutputPanel();
+        const result = await runTestsWithJSON(
+          packagePath,
+          [...splitGoArgs(extraFlags), "-run", runPattern],
+          testsViewProvider,
+          () => testsViewProvider.refresh(),
+          true,
+        );
+        testsViewProvider.finalizeRunningStatuses(
+          result.code === 0 ? "pass" : "fail",
+        );
+        testsViewProvider.updateSubTestsFromOutput(
+          result.rawOutput,
+          packagePath,
+        );
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        const loaded =
+          await coverageDecorator.loadCoverageFromFile(coverageFile);
+        if (loaded) {
+          coverageDecorator.applyDecorationsToAllEditors();
+        }
+        showTestOutputPanel();
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to run sub-test: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
   );
 
@@ -3022,11 +3297,11 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
       if (document.languageId === "go") {
         const goModRoot = await getGoModuleRoot(document.uri.fsPath);
         if (goModRoot) {
-          console.log(
+          debugLog(
             `go.mod encontrado para ${document.fileName} em: ${goModRoot}`,
           );
         } else {
-          console.log(`go.mod não encontrado para ${document.fileName}`);
+          debugLog(`go.mod não encontrado para ${document.fileName}`);
         }
       }
     },
@@ -3036,9 +3311,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
   (async () => {
     const goModPath = await findGoModForWorkspace();
     if (goModPath) {
-      console.log(`go.mod encontrado em: ${goModPath}`);
+      debugLog(`go.mod encontrado em: ${goModPath}`);
     } else {
-      console.log("Nenhum go.mod encontrado no workspace");
+      debugLog("Nenhum go.mod encontrado no workspace");
     }
   })();
 
@@ -3265,17 +3540,14 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
             activeProfMode,
           );
         } else {
-          const extraFlags = testsViewProvider.buildExtraFlags(true);
-          const terminal = vscode.window.createTerminal({
-            name: `Go Test - ${subTestName}`,
-            cwd: packagePath,
+          await vscode.commands.executeCommand("go-assistant.runSubTest", {
+            subTestInfo: {
+              parentName: testName,
+              fullName: `${testName}/${runName}`,
+              packagePath,
+              file: filePath,
+            },
           });
-          terminal.show();
-          sendCmd(
-            terminal,
-            packagePath,
-            `go test ${extraFlags} -run "${runPattern}"`,
-          );
         }
         return;
       }
@@ -3369,6 +3641,9 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     refreshReferencesViewCommand,
     discoverTestsCommand,
     runAllTestsCommand,
+    searchTestsCommand,
+    clearTestsSearchCommand,
+    openTestLogCommand,
     debugAllTestsCommand,
     configureTestFlagsCommand,
     runPackageTestsCommand,

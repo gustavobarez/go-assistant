@@ -17,6 +17,12 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
     };
   }
 
+  private isVerboseLoggingEnabled(): boolean {
+    return vscode.workspace
+      .getConfiguration("goAssistant.logging")
+      .get<boolean>("verbose", false);
+  }
+
   async provideCodeActions(
     document: vscode.TextDocument,
     range: vscode.Range | vscode.Selection,
@@ -2030,10 +2036,14 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       const trimmed = line.trim();
       const indent = line.match(/^(\s*)/)?.[1] ?? "";
 
-      const dbg = (msg: string) =>
-        console.log(
-          `[go-assistant] handleError L${range.start.line + 1}: ${msg}`,
-        );
+      const verbose = this.isVerboseLoggingEnabled();
+      const dbg = (msg: string) => {
+        if (verbose) {
+          console.log(
+            `[go-assistant] handleError L${range.start.line + 1}: ${msg}`,
+          );
+        }
+      };
 
       // Must not already have a flow keyword or assignment
       if (
@@ -2223,14 +2233,17 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
   private extractReturnTypesFromHover(
     hoverText: string,
   ): { name?: string; type: string }[] | undefined {
+    const verbose = this.isVerboseLoggingEnabled();
     // Pull the first Go code block.  gopls uses ```go fences.
     // Normalise \r\n → \n just in case.
     const normalised = hoverText.replace(/\r\n/g, "\n");
     const goBlock = normalised.match(/```(?:go)?\n([\s\S]*?)```/)?.[1];
     if (!goBlock) {
-      console.log(
-        "[go-assistant] extractReturnTypes: no go code block found in hover",
-      );
+      if (verbose) {
+        console.log(
+          "[go-assistant] extractReturnTypes: no go code block found in hover",
+        );
+      }
       return undefined;
     }
 
@@ -2248,14 +2261,18 @@ export class GoCodeActionProvider implements vscode.CodeActionProvider {
       /^func\s+(?:\([^)]*(?:\([^)]*\)[^)]*)*\)\s+)?[\w.]+\s*\(([^)(]|\([^)]*\))*\)\s*(.*)/;
     const funcMatch = oneLine.match(funcRe);
     if (!funcMatch) {
-      console.log(
-        `[go-assistant] extractReturnTypes: funcRe did not match: "${oneLine.substring(0, 200)}"`,
-      );
+      if (verbose) {
+        console.log(
+          `[go-assistant] extractReturnTypes: funcRe did not match: "${oneLine.substring(0, 200)}"`,
+        );
+      }
       return undefined;
     }
 
     const tail = (funcMatch[2] ?? "").trim();
-    console.log(`[go-assistant] extractReturnTypes: tail="${tail}"`);
+    if (verbose) {
+      console.log(`[go-assistant] extractReturnTypes: tail="${tail}"`);
+    }
 
     if (!tail) {
       return []; // void

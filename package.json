@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.2.2",
+  "version": "0.2.3",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -101,6 +101,16 @@
         "icon": "$(gear)"
       },
       {
+        "command": "go-assistant.searchTests",
+        "title": "Search Tests",
+        "icon": "$(search)"
+      },
+      {
+        "command": "go-assistant.clearTestsSearch",
+        "title": "Clear Search",
+        "icon": "$(close)"
+      },
+      {
         "command": "go-assistant.runPackageTests",
         "title": "Run Package Tests",
         "icon": "$(run)"
@@ -114,6 +124,11 @@
         "command": "go-assistant.runTest",
         "title": "Run Test",
         "icon": "$(run)"
+      },
+      {
+        "command": "go-assistant.openTestLog",
+        "title": "View Test Log",
+        "icon": "$(output)"
       },
       {
         "command": "go-assistant.runSubTestFromCode",
@@ -211,7 +226,14 @@
       "go-assistant-tests": [
         {
           "id": "goAssistantTests",
-          "name": "Tests (Go Assistant)"
+          "name": "Tests Explorer (Go Assistant)"
+        }
+      ],
+      "go-assistant-test-results": [
+        {
+          "id": "goAssistantTestResults",
+          "name": "Test Results (Go Assistant)",
+          "type": "webview"
         }
       ]
     },
@@ -226,6 +248,11 @@
           "id": "go-assistant-tests",
           "title": "Tests (Go Assistant)",
           "icon": "$(beaker)"
+        },
+        {
+          "id": "go-assistant-test-results",
+          "title": "Test Results (Go Assistant)",
+          "icon": "$(output)"
         }
       ]
     },
@@ -280,6 +307,16 @@
           "command": "go-assistant.resetTests",
           "when": "view == goAssistantTests",
           "group": "navigation@7"
+        },
+        {
+          "command": "go-assistant.searchTests",
+          "when": "view == goAssistantTests",
+          "group": "navigation@8"
+        },
+        {
+          "command": "go-assistant.clearTestsSearch",
+          "when": "view == goAssistantTests && goAssistant.testsSearchActive",
+          "group": "navigation@9"
         }
       ],
       "view/item/context": [
@@ -314,6 +351,11 @@
           "group": "inline@2"
         },
         {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == test",
+          "group": "inline@3"
+        },
+        {
           "command": "go-assistant.rerunLastTests",
           "when": "view == goAssistantTests && viewItem == historyRoot",
           "group": "inline@1"
@@ -344,6 +386,11 @@
           "group": "inline@2"
         },
         {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == subtest",
+          "group": "inline@3"
+        },
+        {
           "command": "go-assistant.runTest",
           "when": "view == goAssistantTests && viewItem == testWithSubs",
           "group": "inline@1"
@@ -352,6 +399,16 @@
           "command": "go-assistant.debugTest",
           "when": "view == goAssistantTests && viewItem == testWithSubs",
           "group": "inline@2"
+        },
+        {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == testWithSubs",
+          "group": "inline@3"
+        },
+        {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == historyTest",
+          "group": "inline@1"
         }
       ]
     },
@@ -503,6 +560,11 @@
           "default": true,
           "description": "Atualiza automaticamente referências quando arquivos são movidos"
         },
+        "goAssistant.logging.verbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Habilita logs detalhados de depuração no Console do Extension Host"
+        },
         "goAssistant.coverageDecorator.coveredHighlightColor": {
           "type": "string",
           "default": "rgba(100, 200, 100, 0.30)",
@@ -541,16 +603,16 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.109.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.54.0",
-    "eslint": "^9.39.2",
+    "@types/vscode": "^1.109.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.27.2",
+    "eslint": "^9.39.2",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.54.0"
   },
   "packageManager": "pnpm@10.29.3+sha512.498e1fb4cca5aa06c1dcf2611e6fafc50972ffe7189998c409e90de74566444298ffe43e6cd2acdc775ba1aa7cc5e092a8b7054c811ba8c5770f84693d33d2dc"
 }

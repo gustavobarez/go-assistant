@@ -14,6 +14,8 @@ export interface SubTestInfo {
   packagePath: string;
   status?: "pass" | "fail" | "running" | "unknown";
   duration?: number;
+  fileCoverage?: number;
+  packageCoverage?: number;
 }
 
 export interface TestInfo {
@@ -23,12 +25,15 @@ export interface TestInfo {
   packagePath: string;
   status?: "pass" | "fail" | "running" | "unknown";
   duration?: number; // seconds from last run
+  fileCoverage?: number;
+  packageCoverage?: number;
   subTests?: SubTestInfo[];
 }
 
 export interface TestFileInfo {
   file: string;
   packagePath: string;
+  coverage?: number;
   tests: TestInfo[];
 }
 
@@ -37,6 +42,7 @@ export interface TestPackageInfo {
   /** Relative import path from module root e.g. "internal/utils".
    *  For root packages: the actual Go `package` declaration (e.g. "main"). */
   packageName: string;
+  coverage?: number;
   files: TestFileInfo[];
 }
 
@@ -56,6 +62,9 @@ export interface TestRunEntry {
   file: string;
   status: "pass" | "fail" | "unknown";
   duration?: number;
+  output?: string;
+  packageCoverage?: number;
+  fileCoverage?: number;
 }
 
 export interface TestRunHistory {
@@ -72,6 +81,49 @@ export interface LastRunSpec {
   workspacePath?: string;
   packagePath?: string;
   testPattern?: string;
+}
+
+// ─── JSON Test Output Format (go test -json) ────────────────────────────────
+
+export interface TestEventJSON {
+  Time?: string; // RFC3339 format
+  Action:
+    | "start"
+    | "run"
+    | "pause"
+    | "cont"
+    | "pass"
+    | "fail"
+    | "output"
+    | "skip"
+    | "bench";
+  Package: string;
+  Test?: string;
+  Elapsed?: number; // seconds
+  Output?: string;
+  FailedBuild?: string;
+}
+
+// ─── Test Results (with logs and coverage) ──────────────────────────────────
+
+export interface TestOutputLog {
+  testName: string;
+  packagePath: string;
+  output: string[]; // lines of output captured
+  startTime?: Date;
+  endTime?: Date;
+  duration?: number; // seconds
+  coverage?: number; // coverage percentage for this package
+}
+
+export interface TestResult {
+  testName: string;
+  packagePath: string;
+  file: string;
+  status: "pass" | "fail" | "skip" | "unknown";
+  duration: number; // seconds
+  output: TestOutputLog;
+  subTestResults?: TestResult[];
 }
 
 // ─── Profiling mode ───────────────────────────────────────────────────────
@@ -143,7 +195,7 @@ export const AVAILABLE_TEST_FLAGS: TestFlagOption[] = [
     flag: "-fullpath",
     label: "Full Path (-fullpath)",
     description: "Show full file paths in test output",
-    activeByDefault: true,
+    activeByDefault: false,
   },
   // ── Execution ─────────────────────────────────────────────────────────────
   {
@@ -226,7 +278,10 @@ type TestTreeItemType =
   | "root"
   | "historyRoot"
   | "historyRun"
-  | "historyTest";
+  | "historyTest"
+  | "resultsRoot"
+  | "resultsPackage"
+  | "resultTest";
 
 class TestTreeItem extends vscode.TreeItem {
   constructor(
@@ -241,6 +296,8 @@ class TestTreeItem extends vscode.TreeItem {
     public readonly historyRun?: TestRunHistory,
     public readonly historyEntry?: TestRunEntry,
     public readonly subTestInfo?: SubTestInfo,
+    public readonly resultPackagePath?: string,
+    public readonly resultTest?: TestResult,
   ) {
     super(label, collapsibleState);
 
@@ -285,9 +342,14 @@ class TestTreeItem extends vscode.TreeItem {
           const hasDuration = packageInfo.files.some((f) =>
             f.tests.some((t) => t.duration !== undefined),
           );
+          const coveragePart =
+            packageInfo.coverage !== undefined
+              ? ` · ${packageInfo.coverage.toFixed(1)}%`
+              : "";
           this.description = hasDuration
             ? `${totalTests} test${totalTests !== 1 ? "s" : ""} · ${totalDuration.toFixed(2)}s`
             : `${totalTests} test${totalTests !== 1 ? "s" : ""}`;
+          this.description += coveragePart;
           this.tooltip = packageInfo.packagePath;
         }
         break;
@@ -306,9 +368,14 @@ class TestTreeItem extends vscode.TreeItem {
           const hasDuration = fileInfo.tests.some(
             (t) => t.duration !== undefined,
           );
+          const coveragePart =
+            fileInfo.coverage !== undefined
+              ? ` · ${fileInfo.coverage.toFixed(1)}%`
+              : "";
           this.description = hasDuration
             ? `${count} test${count !== 1 ? "s" : ""} · ${totalDuration.toFixed(2)}s`
             : `${count} test${count !== 1 ? "s" : ""}`;
+          this.description += coveragePart;
           this.tooltip = fileInfo.file;
         }
         break;
@@ -316,10 +383,22 @@ class TestTreeItem extends vscode.TreeItem {
       case "test":
         this._applyTestStatusIcon(testInfo?.status);
         if (testInfo) {
+          const coverageParts: string[] = [];
+          if (testInfo.fileCoverage !== undefined) {
+            coverageParts.push(`${testInfo.fileCoverage.toFixed(1)}%`);
+          }
+          if (testInfo.packageCoverage !== undefined) {
+            coverageParts.push(`${testInfo.packageCoverage.toFixed(1)}%`);
+          }
           this.description =
             testInfo.duration !== undefined
-              ? `(${testInfo.duration.toFixed(2)}s)`
+              ? `${testInfo.duration.toFixed(2)}s`
               : undefined;
+          if (coverageParts.length > 0) {
+            this.description = this.description
+              ? `${this.description} · ${coverageParts.join(" · ")}`
+              : coverageParts.join(" · ");
+          }
           this.command =
             testInfo.subTests && testInfo.subTests.length > 0
               ? undefined // expandable – don't navigate on click
@@ -344,10 +423,22 @@ class TestTreeItem extends vscode.TreeItem {
       case "subtest":
         this._applyTestStatusIcon(subTestInfo?.status);
         if (subTestInfo) {
+          const coverageParts: string[] = [];
+          if (subTestInfo.fileCoverage !== undefined) {
+            coverageParts.push(`${subTestInfo.fileCoverage.toFixed(1)}%`);
+          }
+          if (subTestInfo.packageCoverage !== undefined) {
+            coverageParts.push(`${subTestInfo.packageCoverage.toFixed(1)}%`);
+          }
           this.description =
             subTestInfo.duration !== undefined
-              ? `(${subTestInfo.duration.toFixed(2)}s)`
+              ? `${subTestInfo.duration.toFixed(2)}s`
               : undefined;
+          if (coverageParts.length > 0) {
+            this.description = this.description
+              ? `${this.description} · ${coverageParts.join(" · ")}`
+              : coverageParts.join(" · ");
+          }
           this.tooltip = subTestInfo.fullName;
           if (subTestInfo.line !== undefined) {
             this.command = {
@@ -401,14 +492,63 @@ class TestTreeItem extends vscode.TreeItem {
           historyEntry?.status as TestInfo["status"] | undefined,
         );
         if (historyEntry) {
+          const coverageParts: string[] = [];
+          if (historyEntry.fileCoverage !== undefined) {
+            coverageParts.push(`${historyEntry.fileCoverage.toFixed(1)}%`);
+          }
+          if (historyEntry.packageCoverage !== undefined) {
+            coverageParts.push(`${historyEntry.packageCoverage.toFixed(1)}%`);
+          }
           this.description =
             historyEntry.duration !== undefined
-              ? `(${historyEntry.duration.toFixed(2)}s)`
+              ? `${historyEntry.duration.toFixed(2)}s`
               : undefined;
+          if (coverageParts.length > 0) {
+            this.description = this.description
+              ? `${this.description} · ${coverageParts.join(" · ")}`
+              : coverageParts.join(" · ");
+          }
           this.command = {
-            command: "vscode.open",
-            title: "Go to Test",
-            arguments: [vscode.Uri.file(historyEntry.file)],
+            command: "go-assistant.openTestLog",
+            title: "View Test Log",
+            arguments: [this],
+          };
+        }
+        break;
+
+      case "resultsRoot":
+        this.iconPath = new vscode.ThemeIcon("output");
+        this.tooltip = "Latest test logs and results";
+        break;
+
+      case "resultsPackage":
+        this.iconPath = new vscode.ThemeIcon("symbol-namespace");
+        if (resultPackagePath) {
+          this.tooltip = resultPackagePath;
+        }
+        break;
+
+      case "resultTest":
+        this._applyTestStatusIcon(
+          (resultTest?.status as TestInfo["status"] | undefined) ?? "unknown",
+        );
+        if (resultTest) {
+          const coverageParts: string[] = [];
+          if (resultTest.output.coverage !== undefined) {
+            coverageParts.push(`p ${resultTest.output.coverage.toFixed(1)}%`);
+          }
+          const durationPart =
+            resultTest.duration > 0
+              ? `(${resultTest.duration.toFixed(2)}s)`
+              : "";
+          this.description = [durationPart, ...coverageParts]
+            .filter(Boolean)
+            .join(" · ");
+          this.tooltip = `${resultTest.packagePath}\nClick to open log`;
+          this.command = {
+            command: "go-assistant.openTestLog",
+            title: "Open Test Log",
+            arguments: [resultTest.testName, resultTest.packagePath],
           };
         }
         break;
@@ -458,6 +598,25 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
   private activeFlags: Set<string>;
   private flagValues: Record<string, string>;
   private activeProfile: ProfilingMode | undefined;
+  // ─── New: Test results with JSON parsing and coverage ────────────────────
+  private testResults: Map<string, TestResult> = new Map(); // key: "packagePath::testName"
+  private packageCoverage: Map<string, number> = new Map(); // key: PackagePath, value: coverage %
+  private fileCoverage: Map<string, number> = new Map(); // key: file path, value: coverage %
+  private packageAliases: Map<string, string> = new Map(); // key: import path, value: absolute package path
+  private runningTestsByPackage: Map<string, Set<string>> = new Map();
+  private searchQuery = "";
+
+  private isVerboseLoggingEnabled(): boolean {
+    return vscode.workspace
+      .getConfiguration("goAssistant.logging")
+      .get<boolean>("verbose", false);
+  }
+
+  private debugLog(message: string): void {
+    if (this.isVerboseLoggingEnabled()) {
+      console.log(`[go-assistant:test-results] ${message}`);
+    }
+  }
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const saved = context.workspaceState.get<string[]>(
@@ -490,10 +649,93 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       "goAssistant.profileActive",
       !!this.activeProfile,
     );
+    vscode.commands.executeCommand(
+      "setContext",
+      "goAssistant.testsSearchActive",
+      false,
+    );
   }
 
   refresh(): void {
     this._onDidChangeTreeData.fire();
+  }
+
+  getSearchQuery(): string {
+    return this.searchQuery;
+  }
+
+  setSearchQuery(query: string): void {
+    this.searchQuery = query.trim();
+    vscode.commands.executeCommand(
+      "setContext",
+      "goAssistant.testsSearchActive",
+      this.searchQuery.length > 0,
+    );
+    this.refresh();
+  }
+
+  clearSearchQuery(): void {
+    this.setSearchQuery("");
+  }
+
+  private normalizedSearchQuery(): string {
+    return this.searchQuery.toLowerCase();
+  }
+
+  private matchesSearch(value?: string): boolean {
+    const q = this.normalizedSearchQuery();
+    if (!q) {
+      return true;
+    }
+    return (value ?? "").toLowerCase().includes(q);
+  }
+
+  private testMatchesSearch(test: TestInfo): boolean {
+    if (this.matchesSearch(test.name)) {
+      return true;
+    }
+    if (this.matchesSearch(path.basename(test.file))) {
+      return true;
+    }
+    if (this.matchesSearch(test.file)) {
+      return true;
+    }
+    return (
+      test.subTests?.some(
+        (sub) =>
+          this.matchesSearch(sub.name) || this.matchesSearch(sub.fullName),
+      ) ?? false
+    );
+  }
+
+  private fileMatchesSearch(file: TestFileInfo): boolean {
+    if (
+      this.matchesSearch(path.basename(file.file)) ||
+      this.matchesSearch(file.file)
+    ) {
+      return true;
+    }
+    return file.tests.some((test) => this.testMatchesSearch(test));
+  }
+
+  private packageMatchesSearch(pkg: TestPackageInfo): boolean {
+    if (
+      this.matchesSearch(pkg.packageName) ||
+      this.matchesSearch(pkg.packagePath)
+    ) {
+      return true;
+    }
+    return pkg.files.some((file) => this.fileMatchesSearch(file));
+  }
+
+  private moduleMatchesSearch(mod: TestModuleInfo): boolean {
+    if (
+      this.matchesSearch(mod.moduleName) ||
+      this.matchesSearch(mod.moduleRoot)
+    ) {
+      return true;
+    }
+    return mod.packages.some((pkg) => this.packageMatchesSearch(pkg));
   }
 
   // ── Flag management ────────────────────────────────────────────────────────
@@ -532,7 +774,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
    * Build the extra flags string for a `go test` invocation.
    * @param skipRun Skip the global `-run` filter (use when the command provides its own -run).
    * @param coverageFile If provided and the "coverprofile" flag is active, appends
-   *                     `-coverprofile="<path>"` to the output.
+   *                     `-coverprofile=<path>` to the output.
    */
   buildExtraFlags(skipRun = false, coverageFile?: string): string {
     const parts: string[] = [];
@@ -549,7 +791,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       if (f.promptForValue) {
         const val = this.flagValues[f.id] ?? f.defaultValue ?? "";
         if (val) {
-          parts.push(`${f.flag}="${val}"`);
+          parts.push(`${f.flag}=${val}`);
         }
       } else {
         parts.push(f.flag);
@@ -557,7 +799,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     }
     // Append coverprofile after other flags
     if (coverageFile && this.activeFlags.has("coverprofile")) {
-      parts.push(`-coverprofile="${coverageFile}"`);
+      parts.push(`-coverprofile=${coverageFile}`);
       // Coverage profiles are not generated for cached runs, so bypass the cache.
       if (!this.activeFlags.has("count")) {
         parts.push("-count=1");
@@ -583,7 +825,152 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     }
 
     this.modules = await this.findAllTests(this.workspacePath);
+    this.rebuildPackageAliases();
     this.refresh();
+  }
+
+  private rebuildPackageAliases(): void {
+    this.packageAliases.clear();
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        this.packageAliases.set(pkg.packagePath, pkg.packagePath);
+        const rel = path
+          .relative(mod.moduleRoot, pkg.packagePath)
+          .replace(/\\/g, "/");
+        const importPath =
+          !rel || rel === "." ? mod.moduleName : `${mod.moduleName}/${rel}`;
+        this.packageAliases.set(importPath, pkg.packagePath);
+      }
+    }
+  }
+
+  private resolvePackagePath(packageRef: string): string {
+    const mapped = this.packageAliases.get(packageRef);
+    if (mapped) {
+      return mapped;
+    }
+
+    if (packageRef === "command-line-arguments" || packageRef === ".") {
+      if (this.runningTestsByPackage.size === 1) {
+        return [...this.runningTestsByPackage.keys()][0];
+      }
+      if (this.getPackages().length === 1) {
+        return this.getPackages()[0].packagePath;
+      }
+    }
+
+    return packageRef;
+  }
+
+  private makeResultKey(packagePath: string, testName: string): string {
+    return `${packagePath}::${testName}`;
+  }
+
+  private markTestRunning(packagePath: string, testName: string): void {
+    if (!testName) {
+      return;
+    }
+    const running = this.runningTestsByPackage.get(packagePath) ?? new Set();
+    running.add(testName);
+    this.runningTestsByPackage.set(packagePath, running);
+  }
+
+  private markTestFinished(packagePath: string, testName: string): void {
+    if (!testName) {
+      return;
+    }
+    const running = this.runningTestsByPackage.get(packagePath);
+    if (!running) {
+      return;
+    }
+    running.delete(testName);
+    if (running.size === 0) {
+      this.runningTestsByPackage.delete(packagePath);
+    }
+  }
+
+  private getAllRunningTests(): Array<{
+    packagePath: string;
+    testName: string;
+  }> {
+    const running: Array<{ packagePath: string; testName: string }> = [];
+    for (const [pkgPath, tests] of this.runningTestsByPackage.entries()) {
+      for (const testName of tests) {
+        running.push({ packagePath: pkgPath, testName });
+      }
+    }
+    return running;
+  }
+
+  private extractTestFromOutput(output: string): {
+    testName: string;
+    action?: "run" | "pass" | "fail" | "skip";
+  } | null {
+    const line = output.trim();
+    if (!line) {
+      return null;
+    }
+
+    const runMatch = line.match(/^=== RUN\s+(\S+)/);
+    if (runMatch) {
+      const testName = this.sanitizeTestName(runMatch[1]);
+      return testName ? { testName, action: "run" } : null;
+    }
+
+    const passMatch = line.match(/^--- PASS:\s+(\S+)/);
+    if (passMatch) {
+      const testName = this.sanitizeTestName(passMatch[1]);
+      return testName ? { testName, action: "pass" } : null;
+    }
+
+    const failMatch = line.match(/^--- FAIL:\s+(\S+)/);
+    if (failMatch) {
+      const testName = this.sanitizeTestName(failMatch[1]);
+      return testName ? { testName, action: "fail" } : null;
+    }
+
+    const skipMatch = line.match(/^--- SKIP:\s+(\S+)/);
+    if (skipMatch) {
+      const testName = this.sanitizeTestName(skipMatch[1]);
+      return testName ? { testName, action: "skip" } : null;
+    }
+
+    return null;
+  }
+
+  private sanitizeTestName(rawName: string): string {
+    let testName = rawName.trim();
+    testName = testName.replace(/\\n\"?\}?$/g, "");
+    testName = testName.replace(/\"\}?$/g, "");
+    testName = testName.replace(/\(\d+(?:\.\d+)?s\)$/g, "");
+    testName = testName.replace(/[\s,;:]+$/g, "");
+    testName = testName.replace(/^["']+|["']+$/g, "");
+    return /^[-\w./]+$/.test(testName) ? testName : "";
+  }
+
+  private filterTestsByLastRunSpec(
+    packagePath: string,
+    tests: string[],
+  ): string[] {
+    const spec = this.lastRunSpec;
+    if (!spec) {
+      return tests;
+    }
+
+    if (spec.packagePath && spec.packagePath !== packagePath) {
+      return [];
+    }
+
+    if (!spec.testPattern) {
+      return tests;
+    }
+
+    try {
+      const regex = new RegExp(spec.testPattern);
+      return tests.filter((testName) => regex.test(testName));
+    } catch {
+      return tests;
+    }
   }
 
   // ── Discovery ────────────────────────────────────────────────────────────
@@ -847,6 +1234,9 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     // Root level
     if (!element) {
       const items: TestTreeItem[] = [];
+      const filteredModules = this.modules.filter((mod) =>
+        this.moduleMatchesSearch(mod),
+      );
 
       if (this.modules.length === 0) {
         items.push(
@@ -856,9 +1246,17 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             "root",
           ),
         );
+      } else if (filteredModules.length === 0) {
+        items.push(
+          new TestTreeItem(
+            `No matches for "${this.searchQuery}"`,
+            vscode.TreeItemCollapsibleState.None,
+            "root",
+          ),
+        );
       } else {
-        const singleModule = this.modules.length === 1;
-        for (const mod of this.modules) {
+        const singleModule = filteredModules.length === 1;
+        for (const mod of filteredModules) {
           items.push(
             new TestTreeItem(
               mod.moduleName,
@@ -892,43 +1290,60 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
 
     // Module → packages
     if (element.itemType === "module" && element.moduleInfo) {
-      return element.moduleInfo.packages.map(
-        (pkg) =>
-          new TestTreeItem(
-            pkg.packageName,
-            vscode.TreeItemCollapsibleState.Expanded,
-            "package",
-            "package",
-            undefined,
-            undefined,
-            pkg,
-            element.moduleInfo,
-          ),
-      );
+      return element.moduleInfo.packages
+        .filter((pkg) => this.packageMatchesSearch(pkg))
+        .map(
+          (pkg) =>
+            new TestTreeItem(
+              pkg.packageName,
+              vscode.TreeItemCollapsibleState.Expanded,
+              "package",
+              "package",
+              undefined,
+              undefined,
+              pkg,
+              element.moduleInfo,
+            ),
+        );
     }
 
     // Package → files
     if (element.itemType === "package" && element.packageInfo) {
-      return element.packageInfo.files.map(
-        (file) =>
-          new TestTreeItem(
-            path.basename(file.file),
-            vscode.TreeItemCollapsibleState.Expanded,
-            "file",
-            "file",
-            undefined,
-            file,
-            element.packageInfo,
-            element.moduleInfo,
-          ),
-      );
+      return element.packageInfo.files
+        .filter((file) => this.fileMatchesSearch(file))
+        .map(
+          (file) =>
+            new TestTreeItem(
+              path.basename(file.file),
+              vscode.TreeItemCollapsibleState.Expanded,
+              "file",
+              "file",
+              undefined,
+              file,
+              element.packageInfo,
+              element.moduleInfo,
+            ),
+        );
     }
 
     // File → tests
     if (element.itemType === "file" && element.fileInfo) {
-      return element.fileInfo.tests.map(
-        (test) =>
-          new TestTreeItem(
+      return element.fileInfo.tests
+        .filter((test) => this.testMatchesSearch(test))
+        .map((test) => {
+          if (
+            test.packageCoverage === undefined &&
+            element.packageInfo?.coverage !== undefined
+          ) {
+            test.packageCoverage = element.packageInfo.coverage;
+          }
+          if (
+            test.fileCoverage === undefined &&
+            element.fileInfo?.coverage !== undefined
+          ) {
+            test.fileCoverage = element.fileInfo.coverage;
+          }
+          return new TestTreeItem(
             test.name,
             test.subTests !== undefined
               ? vscode.TreeItemCollapsibleState.Collapsed
@@ -939,8 +1354,8 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             element.fileInfo,
             element.packageInfo,
             element.moduleInfo,
-          ),
-      );
+          );
+        });
     }
 
     // Test → sub-tests
@@ -960,22 +1375,27 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
         );
         return [placeholder as TestTreeItem];
       }
-      return element.testInfo.subTests.map(
-        (sub) =>
-          new TestTreeItem(
-            sub.name,
-            vscode.TreeItemCollapsibleState.None,
-            "subtest",
-            "subtest",
-            element.testInfo,
-            element.fileInfo,
-            element.packageInfo,
-            element.moduleInfo,
-            undefined,
-            undefined,
-            sub,
-          ),
-      );
+      return element.testInfo.subTests
+        .filter(
+          (sub) =>
+            this.matchesSearch(sub.name) || this.matchesSearch(sub.fullName),
+        )
+        .map(
+          (sub) =>
+            new TestTreeItem(
+              sub.name,
+              vscode.TreeItemCollapsibleState.None,
+              "subtest",
+              "subtest",
+              element.testInfo,
+              element.fileInfo,
+              element.packageInfo,
+              element.moduleInfo,
+              undefined,
+              undefined,
+              sub,
+            ),
+        );
     }
 
     // History root → individual runs
@@ -1022,6 +1442,74 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       );
     }
 
+    if (element.itemType === "resultsRoot") {
+      const byPackage = new Map<string, TestResult[]>();
+      for (const result of this.testResults.values()) {
+        if (!byPackage.has(result.packagePath)) {
+          byPackage.set(result.packagePath, []);
+        }
+        byPackage.get(result.packagePath)!.push(result);
+      }
+
+      return [...byPackage.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([packagePath, results]) => {
+          const name = this.getPackages().find(
+            (p) => p.packagePath === packagePath,
+          )?.packageName;
+          const item = new TestTreeItem(
+            name ?? packagePath,
+            vscode.TreeItemCollapsibleState.Collapsed,
+            "resultsPackage",
+            "resultsPackage",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            packagePath,
+          );
+          const pkgCov = this.getPackageCoverage(packagePath);
+          item.description = `${results.length} test${results.length !== 1 ? "s" : ""}${pkgCov !== null ? ` · ${pkgCov.toFixed(1)}%` : ""}`;
+          return item;
+        });
+    }
+
+    if (element.itemType === "resultsPackage" && element.resultPackagePath) {
+      const tests = [...this.testResults.values()]
+        .filter((r) => r.packagePath === element.resultPackagePath)
+        .sort((a, b) => {
+          const order: Record<string, number> = {
+            fail: 0,
+            unknown: 1,
+            skip: 2,
+            pass: 3,
+          };
+          return (order[a.status] ?? 1) - (order[b.status] ?? 1);
+        });
+
+      return tests.map(
+        (result) =>
+          new TestTreeItem(
+            result.testName,
+            vscode.TreeItemCollapsibleState.None,
+            "resultTest",
+            "resultTest",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            element.resultPackagePath,
+            result,
+          ),
+      );
+    }
+
     return [];
   }
 
@@ -1034,6 +1522,8 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
    * or merge into existing named subtests.
    */
   updateSubTestsFromOutput(output: string, packagePath?: string): void {
+    const normalizedOutput = this.normalizeOutputForSubTests(output);
+
     // Collect all subtest names per parent from RUN lines
     const discovered = new Map<
       string,
@@ -1043,9 +1533,13 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     // Parse === RUN   TestFoo/sub_name
     const runRegex = /=== RUN\s+(\w+)\/(\S+)/gm;
     let m: RegExpExecArray | null;
-    while ((m = runRegex.exec(output)) !== null) {
+    while ((m = runRegex.exec(normalizedOutput)) !== null) {
       const parent = m[1];
-      const rawSub = m[2];
+      const fullName = this.sanitizeTestName(`${parent}/${m[2]}`);
+      const rawSub = fullName.split("/")[1];
+      if (!rawSub) {
+        continue;
+      }
       if (!discovered.has(parent)) {
         discovered.set(parent, new Map());
       }
@@ -1056,9 +1550,13 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
 
     // Parse --- PASS/FAIL: TestFoo/sub_name (0.01s)
     const resultRegex = /--- (PASS|FAIL):\s+(\w+)\/(\S+)\s+\(([\d.]+)s\)/gm;
-    while ((m = resultRegex.exec(output)) !== null) {
+    while ((m = resultRegex.exec(normalizedOutput)) !== null) {
       const parent = m[2];
-      const rawSub = m[3];
+      const fullName = this.sanitizeTestName(`${parent}/${m[3]}`);
+      const rawSub = fullName.split("/")[1];
+      if (!rawSub) {
+        continue;
+      }
       const status = m[1] === "PASS" ? "pass" : "fail";
       const duration = parseFloat(m[4]);
       if (!discovered.has(parent)) {
@@ -1121,16 +1619,37 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     status: "pass" | "fail" | "running" | "unknown",
     duration?: number,
   ): void {
+    if (testName.includes("/")) {
+      const parentTestName = testName.split("/")[0];
+      this.updateSubTestStatus(
+        parentTestName,
+        testName,
+        packagePath,
+        status,
+        duration,
+      );
+      this.syncResultFromStatus(testName, packagePath, status, duration);
+      return;
+    }
+
+    let matched = false;
     for (const mod of this.modules) {
       for (const pkg of mod.packages) {
         if (pkg.packagePath === packagePath) {
           for (const file of pkg.files) {
             for (const test of file.tests) {
               if (test.name === testName) {
+                matched = true;
                 test.status = status;
                 if (duration !== undefined && status !== "running") {
                   test.duration = duration;
                 }
+                this.syncResultFromStatus(
+                  testName,
+                  packagePath,
+                  status,
+                  duration,
+                );
                 this.refresh();
                 return;
               }
@@ -1138,6 +1657,11 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
           }
         }
       }
+    }
+
+    if (!matched) {
+      this.syncResultFromStatus(testName, packagePath, status, duration);
+      this.refresh();
     }
   }
 
@@ -1160,6 +1684,23 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
                     if (duration !== undefined && status !== "running") {
                       sub.duration = duration;
                     }
+
+                    const subStates = test.subTests
+                      .map((s) => s.status)
+                      .filter((s): s is NonNullable<typeof s> => !!s);
+                    if (subStates.includes("fail")) {
+                      test.status = "fail";
+                    } else if (subStates.includes("running")) {
+                      test.status = "running";
+                    } else if (
+                      subStates.length > 0 &&
+                      subStates.every((s) => s === "pass")
+                    ) {
+                      test.status = "pass";
+                    } else if (subStates.length > 0) {
+                      test.status = "unknown";
+                    }
+
                     this.refresh();
                     return;
                   }
@@ -1179,6 +1720,28 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
           for (const test of file.tests) {
             test.status = "unknown";
             test.duration = undefined;
+          }
+        }
+      }
+    }
+    this.refresh();
+  }
+
+  finalizeRunningStatuses(status: "pass" | "fail" | "unknown"): void {
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            if (test.status === "running") {
+              test.status = status;
+            }
+            if (test.subTests) {
+              for (const sub of test.subTests) {
+                if (sub.status === "running") {
+                  sub.status = status;
+                }
+              }
+            }
           }
         }
       }
@@ -1273,5 +1836,508 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
         ),
       0,
     );
+  }
+
+  // ─── JSON Parsing and Results Storage ──────────────────────────────────────
+
+  /**
+   * Parse a JSON event from `go test -json` output.
+   * Each line is a separate JSON object.
+   */
+  parseTestEventJSON(jsonLine: string): TestEventJSON | null {
+    try {
+      return JSON.parse(jsonLine) as TestEventJSON;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Process incoming test event and update test status/results.
+   * Called as events come in from `go test -json`.
+   */
+  processTestEvent(event: TestEventJSON): void {
+    if (!event.Package) {
+      return;
+    }
+
+    const packagePath = this.resolvePackagePath(event.Package);
+    const testName = event.Test || "";
+    const resultKey = testName
+      ? this.makeResultKey(packagePath, testName)
+      : this.makeResultKey(packagePath, "");
+
+    this.debugLog(
+      `event action=${event.Action} package=${packagePath} test=${testName || "<none>"} hasOutput=${!!event.Output}`,
+    );
+
+    switch (event.Action) {
+      case "run":
+        // Test started
+        if (testName) {
+          this.markTestRunning(packagePath, testName);
+          this.updateTestStatus(testName, packagePath, "running");
+        }
+        break;
+
+      case "pass":
+        if (testName) {
+          this.updateTestStatus(testName, packagePath, "pass", event.Elapsed);
+          this.storeTestOutput(testName, packagePath, "pass", event.Elapsed);
+          this.markTestFinished(packagePath, testName);
+        } else {
+          this.markRunningTestsInPackage(packagePath, "pass");
+          this.runningTestsByPackage.delete(packagePath);
+        }
+        break;
+
+      case "fail":
+        if (testName) {
+          this.updateTestStatus(testName, packagePath, "fail", event.Elapsed);
+          this.storeTestOutput(testName, packagePath, "fail", event.Elapsed);
+          this.markTestFinished(packagePath, testName);
+        } else {
+          this.markRunningTestsInPackage(packagePath, "fail");
+          this.runningTestsByPackage.delete(packagePath);
+        }
+        break;
+
+      case "skip":
+        if (testName) {
+          this.updateTestStatus(testName, packagePath, "unknown");
+          this.storeTestOutput(testName, packagePath, "unknown", 0);
+          this.markTestFinished(packagePath, testName);
+        }
+        break;
+
+      case "output":
+        if (event.Output) {
+          const inferred = this.extractTestFromOutput(event.Output);
+
+          this.debugLog(
+            `output received package=${packagePath} explicitTest=${testName || "<none>"} inferred=${inferred?.testName || "<none>"}`,
+          );
+
+          if (inferred?.action === "run") {
+            this.markTestRunning(packagePath, inferred.testName);
+          } else if (
+            inferred?.action === "pass" ||
+            inferred?.action === "fail" ||
+            inferred?.action === "skip"
+          ) {
+            this.markTestFinished(packagePath, inferred.testName);
+          }
+
+          const targetTests = new Set<string>();
+          if (testName) {
+            targetTests.add(testName);
+          }
+          if (inferred?.testName) {
+            targetTests.add(inferred.testName);
+          }
+
+          if (targetTests.size === 0) {
+            const running = this.runningTestsByPackage.get(packagePath);
+            if (running) {
+              for (const runningTest of running) {
+                targetTests.add(runningTest);
+              }
+            }
+          }
+
+          if (targetTests.size > 0) {
+            this.debugLog(
+              `output mapped to ${targetTests.size} test(s) in package=${packagePath}`,
+            );
+            for (const targetTest of targetTests) {
+              const safeTestName = this.sanitizeTestName(targetTest);
+              if (!safeTestName) {
+                continue;
+              }
+              this.syncResultFromStatus(safeTestName, packagePath, "unknown");
+              this.appendTestOutput(
+                this.makeResultKey(packagePath, safeTestName),
+                event.Output,
+              );
+            }
+          } else if (testName) {
+            const safeTestName = this.sanitizeTestName(testName);
+            if (safeTestName) {
+              this.syncResultFromStatus(safeTestName, packagePath, "unknown");
+              this.appendTestOutput(
+                this.makeResultKey(packagePath, safeTestName),
+                event.Output,
+              );
+            }
+          } else {
+            const discovered = this.getDiscoveredTestsInPackage(packagePath);
+            const filteredDiscovered = this.filterTestsByLastRunSpec(
+              packagePath,
+              discovered,
+            );
+            if (filteredDiscovered.length > 0) {
+              this.debugLog(
+                `output mapped by discovery to ${filteredDiscovered.length} test(s) in package=${packagePath}`,
+              );
+              for (const discoveredTest of filteredDiscovered) {
+                this.syncResultFromStatus(
+                  discoveredTest,
+                  packagePath,
+                  "unknown",
+                );
+                this.appendTestOutput(
+                  this.makeResultKey(packagePath, discoveredTest),
+                  event.Output,
+                );
+              }
+            } else {
+              const runningGlobal = this.getAllRunningTests();
+              if (runningGlobal.length > 0) {
+                this.debugLog(
+                  `output mapped by global running fallback to ${runningGlobal.length} test(s)`,
+                );
+                for (const current of runningGlobal) {
+                  this.syncResultFromStatus(
+                    current.testName,
+                    current.packagePath,
+                    "unknown",
+                  );
+                  this.appendTestOutput(
+                    this.makeResultKey(current.packagePath, current.testName),
+                    event.Output,
+                  );
+                }
+              } else {
+                this.debugLog(
+                  `output dropped (no target tests) package=${packagePath} line=${event.Output.trim().slice(0, 120)}`,
+                );
+                this.appendRunnerOutput(event.Output, packagePath);
+              }
+            }
+          }
+
+          const coverageMatch = event.Output.match(
+            /coverage:\s*([\d.]+)%\s+of statements/i,
+          );
+          if (coverageMatch) {
+            this.setPackageCoverage(packagePath, parseFloat(coverageMatch[1]));
+          }
+        }
+        break;
+    }
+
+    this.refresh();
+  }
+
+  private markRunningTestsInPackage(
+    packagePath: string,
+    status: "pass" | "fail" | "unknown",
+  ): void {
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        if (pkg.packagePath !== packagePath) {
+          continue;
+        }
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            if (test.status === "running") {
+              test.status = status;
+              this.syncResultFromStatus(
+                test.name,
+                packagePath,
+                status,
+                test.duration,
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Store test output log.
+   */
+  private storeTestOutput(
+    testName: string,
+    packagePath: string,
+    status: "pass" | "fail" | "unknown",
+    duration?: number,
+  ): void {
+    const resultKey = this.makeResultKey(packagePath, testName);
+
+    let result = this.testResults.get(resultKey);
+    if (!result) {
+      const file = this.findTestFile(testName, packagePath);
+      result = {
+        testName,
+        packagePath,
+        file,
+        status,
+        duration: duration || 0,
+        output: {
+          testName,
+          packagePath,
+          output: [],
+          duration,
+          coverage: this.packageCoverage.get(packagePath),
+        },
+      };
+    }
+
+    result.status = status;
+    result.duration = duration || 0;
+    result.output.endTime = new Date();
+    result.output.duration = duration;
+    result.output.coverage = this.packageCoverage.get(packagePath);
+
+    this.testResults.set(resultKey, result);
+  }
+
+  private findTestFile(testName: string, packagePath: string): string {
+    const parentTestName = testName.includes("/")
+      ? testName.split("/")[0]
+      : testName;
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        if (pkg.packagePath !== packagePath) {
+          continue;
+        }
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            if (test.name === parentTestName) {
+              return test.file;
+            }
+          }
+        }
+      }
+    }
+    return "";
+  }
+
+  private getDiscoveredTestsInPackage(packagePath: string): string[] {
+    const names: string[] = [];
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        if (pkg.packagePath !== packagePath) {
+          continue;
+        }
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            names.push(test.name);
+          }
+        }
+      }
+    }
+    return names;
+  }
+
+  private syncResultFromStatus(
+    testName: string,
+    packagePath: string,
+    status: "pass" | "fail" | "running" | "unknown",
+    duration?: number,
+  ): void {
+    if (!testName) {
+      return;
+    }
+
+    const resultKey = this.makeResultKey(packagePath, testName);
+    const resultStatus: TestResult["status"] =
+      status === "running" ? "unknown" : status;
+    const file = this.findTestFile(testName, packagePath);
+
+    const existing = this.testResults.get(resultKey);
+    if (existing) {
+      existing.status = resultStatus;
+      if (duration !== undefined) {
+        existing.duration = duration;
+        existing.output.duration = duration;
+      }
+      if (!existing.file && file) {
+        existing.file = file;
+      }
+      existing.output.coverage = this.packageCoverage.get(packagePath);
+      this.testResults.set(resultKey, existing);
+      return;
+    }
+
+    this.testResults.set(resultKey, {
+      testName,
+      packagePath,
+      file,
+      status: resultStatus,
+      duration: duration ?? 0,
+      output: {
+        testName,
+        packagePath,
+        output: [],
+        duration,
+        coverage: this.packageCoverage.get(packagePath),
+      },
+    });
+  }
+
+  /**
+   * Append output to a test's log.
+   */
+  private appendTestOutput(resultKey: string, output: string): void {
+    let result = this.testResults.get(resultKey);
+    if (!result) {
+      const [packagePath = "", testName = ""] = resultKey.split("::");
+      result = {
+        testName,
+        packagePath,
+        file: "",
+        status: "unknown",
+        duration: 0,
+        output: {
+          testName,
+          packagePath,
+          output: [],
+          coverage: this.packageCoverage.get(packagePath),
+        },
+      };
+    }
+
+    result.output.output.push(output);
+    this.testResults.set(resultKey, result);
+
+    this.debugLog(
+      `append output key=${resultKey} totalLines=${result.output.output.length}`,
+    );
+  }
+
+  /**
+   * Get stored test output/logs for a specific test.
+   */
+  getTestOutput(testName: string, packagePath: string): TestOutputLog | null {
+    const resultKey = this.makeResultKey(packagePath, testName);
+    const result = this.testResults.get(resultKey);
+    return result ? result.output : null;
+  }
+
+  getTestResult(testName: string, packagePath: string): TestResult | null {
+    return (
+      this.testResults.get(this.makeResultKey(packagePath, testName)) ?? null
+    );
+  }
+
+  getAllTestResults(): TestResult[] {
+    return [...this.testResults.values()];
+  }
+
+  /**
+   * Set coverage percentage for a package.
+   */
+  setPackageCoverage(packagePath: string, coverage: number): void {
+    this.packageCoverage.set(packagePath, coverage);
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        if (pkg.packagePath !== packagePath) {
+          continue;
+        }
+        pkg.coverage = coverage;
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            test.packageCoverage = coverage;
+            if (test.subTests) {
+              for (const sub of test.subTests) {
+                sub.packageCoverage = coverage;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  setFileCoverage(filePath: string, coverage: number): void {
+    this.fileCoverage.set(filePath, coverage);
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        for (const file of pkg.files) {
+          if (file.file !== filePath) {
+            continue;
+          }
+          file.coverage = coverage;
+          for (const test of file.tests) {
+            test.fileCoverage = coverage;
+            if (test.subTests) {
+              for (const sub of test.subTests) {
+                sub.fileCoverage = coverage;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Get coverage percentage for a package.
+   */
+  getPackageCoverage(packagePath: string): number | null {
+    return this.packageCoverage.get(packagePath) || null;
+  }
+
+  getFileCoverage(filePath: string): number | null {
+    return this.fileCoverage.get(filePath) || null;
+  }
+
+  /**
+   * Clear all stored results (call before running new tests).
+   */
+  clearTestResults(): void {
+    this.testResults.clear();
+    this.packageCoverage.clear();
+    this.fileCoverage.clear();
+    this.runningTestsByPackage.clear();
+  }
+
+  appendRunnerOutput(output: string, packagePath?: string): void {
+    const text = output.trim();
+    if (!text) {
+      return;
+    }
+
+    const fallbackPackage =
+      packagePath ??
+      this.getPackages()[0]?.packagePath ??
+      this.workspacePath ??
+      "<workspace>";
+    const runnerTestName = "(go test runner output)";
+    const runnerFileName = "(runner output)";
+    const key = this.makeResultKey(fallbackPackage, runnerTestName);
+
+    this.syncResultFromStatus(runnerTestName, fallbackPackage, "unknown");
+    const existing = this.testResults.get(key);
+    if (existing && !existing.file) {
+      existing.file = runnerFileName;
+      this.testResults.set(key, existing);
+    }
+    this.appendTestOutput(key, `${text}\n`);
+    this.refresh();
+  }
+
+  private normalizeOutputForSubTests(rawOutput: string): string {
+    const lines = rawOutput.split(/\r?\n/);
+    const extracted: string[] = [];
+
+    for (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      const event = this.parseTestEventJSON(line);
+      if (event?.Output) {
+        extracted.push(event.Output);
+      }
+    }
+
+    if (extracted.length > 0) {
+      return extracted.join("");
+    }
+
+    return rawOutput;
   }
 }

@@ -39,6 +39,18 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
   private readonly CACHE_TTL = 30000; // 30 seconds
   private cachedConfig: Config | undefined;
 
+  private isVerboseLoggingEnabled(): boolean {
+    return vscode.workspace
+      .getConfiguration("goAssistant.logging")
+      .get<boolean>("verbose", false);
+  }
+
+  private debugLog(message: string): void {
+    if (this.isVerboseLoggingEnabled()) {
+      console.log(message);
+    }
+  }
+
   public refresh(): void {
     this._onDidChangeCodeLenses.fire();
   }
@@ -479,7 +491,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
 
       let title = `${count} ${count === 1 ? "referência" : "referências"}`;
 
-      console.log(`${symbol.name}: ${count} referências encontradas`);
+      this.debugLog(`${symbol.name}: ${count} referências encontradas`);
 
       const codeLens = new vscode.CodeLens(range, {
         title: title,
@@ -502,7 +514,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
       const methods = await this.findMethodsWithReceiver(document, symbol.name);
       const count = methods.length;
 
-      console.log(`${symbol.name}: ${count} métodos encontrados`);
+      this.debugLog(`${symbol.name}: ${count} métodos encontrados`);
 
       if (count === 0) {
         return null;
@@ -910,7 +922,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         }
       }
 
-      console.log(
+      this.debugLog(
         `[Struct ${symbol.name}] Implements ${interfaces.length} interfaces (${locations.length} total from gopls)`,
       );
 
@@ -1431,13 +1443,13 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
       );
 
       if (!locations || locations.length === 0) {
-        console.log(
+        this.debugLog(
           `[Method ${methodSymbol.name}] No interface methods found via ImplementationProvider`,
         );
         return [];
       }
 
-      console.log(
+      this.debugLog(
         `[Method ${methodSymbol.name}] ImplementationProvider returned ${locations.length} locations`,
       );
 
@@ -1479,7 +1491,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
                 interfaceLocations.push(
                   new vscode.Location(location.uri, symbol.range),
                 );
-                console.log(
+                this.debugLog(
                   `[Method ${methodSymbol.name}] Implements interface: ${symbol.name}`,
                 );
               }
@@ -1488,7 +1500,7 @@ export class GoCodeLensProvider implements vscode.CodeLensProvider {
         }
       }
 
-      console.log(
+      this.debugLog(
         `[Method ${methodSymbol.name}] Returning ${interfaceLocations.length} interfaces`,
       );
 
