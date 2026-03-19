@@ -2,6 +2,50 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.2.4] - 2026-03-19
+
+### Alterado
+
+#### 🧪 Testing — Views
+
+- **Unificação de Tests + Log no mesmo container**: a arquitetura saiu de um painel WebView separado para uma experiência nativa com duas views (`Tests` e `Log`) no mesmo container de testes
+- **Foco do log por seleção de teste**: ao abrir log de teste/histórico, a seleção é sincronizada por payload e a view de log é focada automaticamente
+
+#### 🧪 Testing — Navegação
+
+- **Novo comando `Go to Test`**: adicionado para nós de teste na árvore (`test`, `subtest`, `testWithSubs` e histórico), permitindo navegação direta ao código
+
+### Adicionado
+
+- **`goTestResultsNativeViews.ts`**: novo provider nativo para exibição de logs de teste na sidebar (sem depender de WebView)
+
+### Removido
+
+- **`goTestResultsPanel.ts`**: removido o painel WebView legado de resultados
+- **Container `go-assistant-test-results`**: removida a área separada de “Test Results (Go Assistant)” do `package.json`
+
+---
+
+## [0.2.3] - 2026-03-19
+
+### Adicionado
+
+#### 🧪 Testing — Resultados e Logs
+
+- **Painel de resultados dedicado**: introduzido `goTestResultsPanel.ts` (WebView) para listar resultados e logs de testes
+- **Ação `View Test Log` na árvore de testes**: disponível em testes, subtestes, testes com subtestes e itens do histórico
+- **Busca na view de testes**: novos comandos `Search Tests` e `Clear Search` no cabeçalho da view
+
+#### 🧪 Testing — Runner
+
+- **Execução com `go test -json`**: pipeline de processamento de eventos em tempo real para atualizar status, duração e saída dos testes
+- **Canal de saída dedicado do runner**: logs técnicos centralizados em `Go Assistant Test Runner`
+- **Configuração de log detalhado**: novo setting `goAssistant.logging.verbose`
+
+### Alterado
+
+- **Estrutura interna da view de testes**: ampliação do modelo de resultados/histórico para suportar seleção de logs e renderização no painel dedicado
+
 ## [0.2.0] - 2026-03-03
 
 ### Adicionado
