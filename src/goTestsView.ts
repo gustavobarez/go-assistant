@@ -278,10 +278,23 @@ type TestTreeItemType =
   | "root"
   | "historyRoot"
   | "historyRun"
+  | "historyPackage"
+  | "historyFile"
   | "historyTest"
   | "resultsRoot"
   | "resultsPackage"
   | "resultTest";
+
+function testLeafCount(test: TestInfo): number {
+  if (test.subTests && test.subTests.length > 0) {
+    return test.subTests.length;
+  }
+  return 1;
+}
+
+function testsLeafCount(tests: TestInfo[]): number {
+  return tests.reduce((sum, test) => sum + testLeafCount(test), 0);
+}
 
 class TestTreeItem extends vscode.TreeItem {
   constructor(
@@ -298,6 +311,8 @@ class TestTreeItem extends vscode.TreeItem {
     public readonly subTestInfo?: SubTestInfo,
     public readonly resultPackagePath?: string,
     public readonly resultTest?: TestResult,
+    public readonly historyPackagePath?: string,
+    public readonly historyFilePath?: string,
   ) {
     super(label, collapsibleState);
 
@@ -306,7 +321,8 @@ class TestTreeItem extends vscode.TreeItem {
         this.iconPath = new vscode.ThemeIcon("package");
         if (moduleInfo) {
           const totalTests = moduleInfo.packages.reduce(
-            (s, p) => s + p.files.reduce((fs, f) => fs + f.tests.length, 0),
+            (s, p) =>
+              s + p.files.reduce((fs, f) => fs + testsLeafCount(f.tests), 0),
             0,
           );
           const totalDuration = moduleInfo.packages.reduce(
@@ -333,7 +349,7 @@ class TestTreeItem extends vscode.TreeItem {
         this.iconPath = new vscode.ThemeIcon("symbol-namespace");
         if (packageInfo) {
           const totalTests = packageInfo.files.reduce(
-            (s, f) => s + f.tests.length,
+            (s, f) => s + testsLeafCount(f.tests),
             0,
           );
           const totalDuration = packageInfo.files.reduce((s, f) => {
@@ -360,7 +376,7 @@ class TestTreeItem extends vscode.TreeItem {
           this.iconPath = vscode.ThemeIcon.File;
         }
         if (fileInfo) {
-          const count = fileInfo.tests.length;
+          const count = testsLeafCount(fileInfo.tests);
           const totalDuration = fileInfo.tests.reduce(
             (s, t) => s + (t.duration ?? 0),
             0,
@@ -383,6 +399,7 @@ class TestTreeItem extends vscode.TreeItem {
       case "test":
         this._applyTestStatusIcon(testInfo?.status);
         if (testInfo) {
+          const nestedCount = testLeafCount(testInfo);
           const coverageParts: string[] = [];
           if (testInfo.fileCoverage !== undefined) {
             coverageParts.push(`${testInfo.fileCoverage.toFixed(1)}%`);
@@ -394,6 +411,11 @@ class TestTreeItem extends vscode.TreeItem {
             testInfo.duration !== undefined
               ? `${testInfo.duration.toFixed(2)}s`
               : undefined;
+          if (testInfo.subTests && testInfo.subTests.length > 0) {
+            this.description = this.description
+              ? `${nestedCount} tests · ${this.description}`
+              : `${nestedCount} tests`;
+          }
           if (coverageParts.length > 0) {
             this.description = this.description
               ? `${this.description} · ${coverageParts.join(" · ")}`
@@ -440,7 +462,7 @@ class TestTreeItem extends vscode.TreeItem {
               : coverageParts.join(" · ");
           }
           this.tooltip = subTestInfo.fullName;
-          if (subTestInfo.line !== undefined) {
+          if (testInfo?.line !== undefined) {
             this.command = {
               command: "vscode.open",
               title: "Go to Sub-test",
@@ -448,8 +470,8 @@ class TestTreeItem extends vscode.TreeItem {
                 vscode.Uri.file(subTestInfo.file),
                 {
                   selection: new vscode.Range(
-                    new vscode.Position(subTestInfo.line, 0),
-                    new vscode.Position(subTestInfo.line, 0),
+                    new vscode.Position(testInfo.line, 0),
+                    new vscode.Position(testInfo.line, 0),
                   ),
                   preview: false,
                 },
@@ -487,6 +509,23 @@ class TestTreeItem extends vscode.TreeItem {
         }
         break;
 
+      case "historyPackage":
+        this.iconPath = new vscode.ThemeIcon("symbol-namespace");
+        if (historyPackagePath) {
+          this.tooltip = historyPackagePath;
+        }
+        break;
+
+      case "historyFile":
+        this.iconPath = vscode.ThemeIcon.File;
+        if (historyFilePath) {
+          this.tooltip = historyFilePath;
+          if (path.isAbsolute(historyFilePath)) {
+            this.resourceUri = vscode.Uri.file(historyFilePath);
+          }
+        }
+        break;
+
       case "historyTest":
         this._applyTestStatusIcon(
           historyEntry?.status as TestInfo["status"] | undefined,
@@ -508,11 +547,17 @@ class TestTreeItem extends vscode.TreeItem {
               ? `${this.description} · ${coverageParts.join(" · ")}`
               : coverageParts.join(" · ");
           }
-          this.command = {
-            command: "go-assistant.openTestLog",
-            title: "View Test Log",
-            arguments: [this],
-          };
+          if (
+            this.collapsibleState === vscode.TreeItemCollapsibleState.None &&
+            historyEntry.output &&
+            historyEntry.output.trim().length > 0
+          ) {
+            this.command = {
+              command: "go-assistant.openTestLog",
+              title: "View Test Log",
+              arguments: [this],
+            };
+          }
         }
         break;
 
@@ -1230,6 +1275,104 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     return element;
   }
 
+  private summarizeHistoryStatus(
+    entries: TestRunEntry[],
+  ): "pass" | "fail" | "unknown" {
+    if (entries.some((entry) => entry.status === "fail")) {
+      return "fail";
+    }
+    if (entries.some((entry) => entry.status === "pass")) {
+      return "pass";
+    }
+    return "unknown";
+  }
+
+  private hasMeaningfulLog(output?: string): boolean {
+    if (!output) {
+      return false;
+    }
+    const ignored =
+      /^(=== RUN\s+|--- (PASS|FAIL|SKIP):\s+|PASS$|FAIL$|ok\s+|\?\s+|RUN\s*$)/;
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .some((line) => line.length > 0 && !ignored.test(line));
+  }
+
+  private historyLeafEntries(entries: TestRunEntry[]): TestRunEntry[] {
+    const byName = new Map<string, TestRunEntry>();
+    for (const entry of entries) {
+      byName.set(entry.testName, entry);
+    }
+
+    return [...byName.values()].filter(
+      (entry) =>
+        !entries.some(
+          (other) =>
+            other.testName !== entry.testName &&
+            other.testName.startsWith(`${entry.testName}/`),
+        ),
+    );
+  }
+
+  private createHistoryTestNode(
+    run: TestRunHistory,
+    packagePath: string,
+    filePath: string,
+    testName: string,
+  ): TestTreeItem {
+    const entriesForTest = run.entries.filter(
+      (entry) =>
+        entry.packagePath === packagePath &&
+        entry.file === filePath &&
+        (entry.testName === testName ||
+          entry.testName.startsWith(`${testName}/`)),
+    );
+
+    const exactEntry = entriesForTest.find(
+      (entry) => entry.testName === testName,
+    );
+    const hasChildren = entriesForTest.some((entry) =>
+      entry.testName.startsWith(`${testName}/`),
+    );
+    const status = this.summarizeHistoryStatus(entriesForTest);
+    const duration = exactEntry?.duration;
+    const label = testName.split("/").pop() ?? testName;
+    const output = exactEntry?.output;
+    const hasLog = this.hasMeaningfulLog(output);
+
+    const nodeEntry: TestRunEntry = {
+      testName,
+      packagePath,
+      file: filePath,
+      status,
+      duration,
+      output,
+      packageCoverage: exactEntry?.packageCoverage,
+      fileCoverage: exactEntry?.fileCoverage,
+    };
+
+    return new TestTreeItem(
+      label,
+      hasChildren
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None,
+      "historyTest",
+      hasLog ? "historyTest" : "historyTestNoLog",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      run,
+      nodeEntry,
+      undefined,
+      undefined,
+      undefined,
+      packagePath,
+      filePath,
+    );
+  }
+
   async getChildren(element?: TestTreeItem): Promise<TestTreeItem[]> {
     // Root level
     if (!element) {
@@ -1403,42 +1546,174 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       return this.runHistory
         .slice()
         .reverse()
-        .map(
-          (run) =>
-            new TestTreeItem(
-              run.label,
-              vscode.TreeItemCollapsibleState.Collapsed,
-              "historyRun",
-              "historyRun",
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              run,
-            ),
-        );
+        .map((run) => {
+          const leaves = this.historyLeafEntries(run.entries);
+          const pass = leaves.filter((entry) => entry.status === "pass").length;
+          const fail = leaves.filter((entry) => entry.status === "fail").length;
+          const item = new TestTreeItem(
+            run.label,
+            vscode.TreeItemCollapsibleState.Collapsed,
+            "historyRun",
+            "historyRun",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            run,
+          );
+          item.description = `${leaves.length} test${leaves.length !== 1 ? "s" : ""}${pass > 0 ? ` · ${pass} pass` : ""}${fail > 0 ? ` · ${fail} fail` : ""}`;
+          return item;
+        });
     }
 
     // History run → test results
     if (element.itemType === "historyRun" && element.historyRun) {
-      const sorted = [...element.historyRun.entries].sort((a, b) => {
-        const order: Record<string, number> = { fail: 0, unknown: 1, pass: 2 };
-        return (order[a.status] ?? 1) - (order[b.status] ?? 1);
-      });
-      return sorted.map(
-        (entry) =>
-          new TestTreeItem(
-            entry.testName,
-            vscode.TreeItemCollapsibleState.None,
-            "historyTest",
-            "historyTest",
+      const byPackage = new Map<string, TestRunEntry[]>();
+      for (const entry of element.historyRun.entries) {
+        if (!byPackage.has(entry.packagePath)) {
+          byPackage.set(entry.packagePath, []);
+        }
+        byPackage.get(entry.packagePath)!.push(entry);
+      }
+
+      return [...byPackage.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([packagePath, entries]) => {
+          const packageLabel =
+            this.getPackages().find((pkg) => pkg.packagePath === packagePath)
+              ?.packageName ?? packagePath;
+          const status = this.summarizeHistoryStatus(entries);
+          const item = new TestTreeItem(
+            packageLabel,
+            vscode.TreeItemCollapsibleState.Collapsed,
+            "historyPackage",
+            "historyPackage",
             undefined,
             undefined,
             undefined,
             undefined,
             element.historyRun,
-            entry,
-          ),
+            {
+              testName: packageLabel,
+              packagePath,
+              file: "",
+              status,
+            },
+            undefined,
+            undefined,
+            undefined,
+            packagePath,
+          );
+          const leaves = this.historyLeafEntries(entries);
+          item.description = `${leaves.length} test${leaves.length !== 1 ? "s" : ""}`;
+          return item;
+        });
+    }
+
+    if (
+      element.itemType === "historyPackage" &&
+      element.historyRun &&
+      element.historyPackagePath
+    ) {
+      const byFile = new Map<string, TestRunEntry[]>();
+      for (const entry of element.historyRun.entries) {
+        if (entry.packagePath !== element.historyPackagePath) {
+          continue;
+        }
+        if (!byFile.has(entry.file)) {
+          byFile.set(entry.file, []);
+        }
+        byFile.get(entry.file)!.push(entry);
+      }
+
+      return [...byFile.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([filePath, entries]) => {
+          const status = this.summarizeHistoryStatus(entries);
+          const item = new TestTreeItem(
+            path.basename(filePath),
+            vscode.TreeItemCollapsibleState.Collapsed,
+            "historyFile",
+            "historyFile",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            element.historyRun,
+            {
+              testName: path.basename(filePath),
+              packagePath: element.historyPackagePath!,
+              file: filePath,
+              status,
+            },
+            undefined,
+            undefined,
+            undefined,
+            element.historyPackagePath,
+            filePath,
+          );
+          const leaves = this.historyLeafEntries(entries);
+          item.description = `${leaves.length} test${leaves.length !== 1 ? "s" : ""}`;
+          return item;
+        });
+    }
+
+    if (
+      element.itemType === "historyFile" &&
+      element.historyRun &&
+      element.historyPackagePath &&
+      element.historyFilePath
+    ) {
+      const entries = element.historyRun.entries.filter(
+        (entry) =>
+          entry.packagePath === element.historyPackagePath &&
+          entry.file === element.historyFilePath,
+      );
+      const topLevel = Array.from(
+        new Set(entries.map((entry) => entry.testName.split("/")[0])),
+      ).sort((a, b) => a.localeCompare(b));
+
+      return topLevel.map((testName) =>
+        this.createHistoryTestNode(
+          element.historyRun!,
+          element.historyPackagePath!,
+          element.historyFilePath!,
+          testName,
+        ),
+      );
+    }
+
+    if (
+      element.itemType === "historyTest" &&
+      element.historyRun &&
+      element.historyPackagePath &&
+      element.historyFilePath &&
+      element.historyEntry
+    ) {
+      const parentName = element.historyEntry.testName;
+      const parentDepth = parentName.split("/").length;
+      const prefix = `${parentName}/`;
+      const directChildren = Array.from(
+        new Set(
+          element.historyRun.entries
+            .filter(
+              (entry) =>
+                entry.packagePath === element.historyPackagePath &&
+                entry.file === element.historyFilePath &&
+                entry.testName.startsWith(prefix) &&
+                entry.testName.split("/").length === parentDepth + 1,
+            )
+            .map((entry) => entry.testName),
+        ),
+      ).sort((a, b) => a.localeCompare(b));
+
+      return directChildren.map((childName) =>
+        this.createHistoryTestNode(
+          element.historyRun!,
+          element.historyPackagePath!,
+          element.historyFilePath!,
+          childName,
+        ),
       );
     }
 
@@ -1581,25 +1856,40 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             if (!subs) {
               continue;
             }
-            // Rebuild subTests list (preserve existing statically-found entries
-            // or replace placeholder [] entirely with discovered ones)
-            const newSubTests: SubTestInfo[] = [];
+            // Merge discovered subtests with existing ones so running a single
+            // subtest does not make siblings disappear from the tree.
+            const existing = test.subTests ?? [];
+            const merged = new Map<string, SubTestInfo>();
+
+            const normalizeSubKey = (value: string): string =>
+              value.replace(/ /g, "_").trim();
+
+            for (const sub of existing) {
+              const raw = sub.fullName.startsWith(`${test.name}/`)
+                ? sub.fullName.slice(test.name.length + 1)
+                : sub.name;
+              merged.set(normalizeSubKey(raw), { ...sub });
+            }
+
             for (const [rawSub, info] of subs) {
-              // Go test replaces spaces with _ in run output.
-              // For display, convert _ back to space when we know the name came from
-              // output (heuristic: keep as-is, user sees exact run pattern).
-              const displayName = rawSub.replace(/_/g, " ");
-              newSubTests.push({
+              const key = normalizeSubKey(rawSub);
+              const prev = merged.get(key);
+              const displayName = prev?.name ?? rawSub.replace(/_/g, " ");
+              merged.set(key, {
                 name: displayName,
                 fullName: `${test.name}/${rawSub}`,
                 parentName: test.name,
                 file: test.file,
                 packagePath: pkg.packagePath,
+                line: prev?.line,
                 status: info.status,
                 duration: info.duration,
+                fileCoverage: prev?.fileCoverage,
+                packageCoverage: prev?.packageCoverage,
               });
             }
-            test.subTests = newSubTests;
+
+            test.subTests = Array.from(merged.values());
             changed = true;
           }
         }
@@ -1836,6 +2126,38 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
         ),
       0,
     );
+  }
+
+  findTestLocation(
+    testName: string,
+    packagePath: string,
+  ): { file: string; line: number } | null {
+    const parentTestName = testName.includes("/")
+      ? testName.split("/")[0]
+      : testName;
+
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        if (pkg.packagePath !== packagePath) {
+          continue;
+        }
+
+        for (const file of pkg.files) {
+          for (const test of file.tests) {
+            if (test.name !== parentTestName) {
+              continue;
+            }
+
+            if (!testName.includes("/")) {
+              return { file: test.file, line: test.line };
+            }
+            return { file: test.file, line: test.line };
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
   // ─── JSON Parsing and Results Storage ──────────────────────────────────────

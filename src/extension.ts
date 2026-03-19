@@ -14,13 +14,18 @@ import { GoInlineValuesProvider } from "./goInlineValuesProvider";
 import { findGoModForWorkspace, getGoModuleRoot } from "./goModFinder";
 import { GoProtoCodeLensProvider } from "./goProtoCodeLensProvider";
 import { GoReferencesViewProvider, SymbolInfo } from "./goReferencesView";
-import { GoTestResultsPanel } from "./goTestResultsPanel";
+import {
+  createResultsState,
+  GoTestResultsLogProvider,
+  ResultSelectionRequest,
+} from "./goTestResultsNativeViews";
 import {
   AVAILABLE_TEST_FLAGS,
   GoTestsViewProvider,
   PROFILING_MODES,
   ProfilingMode,
   TestEventJSON,
+  TestResult,
   TestRunEntry,
 } from "./goTestsView";
 
@@ -478,28 +483,168 @@ export function activate(context: vscode.ExtensionContext) {
     treeDataProvider: testsViewProvider,
     showCollapseAll: true,
   });
+  testsView.title = "Tests";
 
-  const testResultsViewProvider = new GoTestResultsPanel(testsViewProvider);
-  const testResultsViewDisposable = vscode.window.registerWebviewViewProvider(
-    GoTestResultsPanel.viewId,
-    testResultsViewProvider,
-    {
-      webviewOptions: { retainContextWhenHidden: true },
-    },
+  const resultsSelectionState = createResultsState();
+  const testResultsLogProvider = new GoTestResultsLogProvider(
+    resultsSelectionState,
   );
 
-  const showTestOutputPanel = (selected?: {
-    source: "current" | "history";
-    testName: string;
-    packagePath: string;
-    runId?: string;
-  }) => {
-    void testResultsViewProvider.reveal(selected);
+  const testResultsLogView = vscode.window.createTreeView(
+    "goAssistantTestsLog",
+    {
+      treeDataProvider: testResultsLogProvider,
+      showCollapseAll: false,
+    },
+  );
+  testResultsLogView.title = "Log";
+
+  const buildSelectionPayload = (selected: ResultSelectionRequest) => {
+    const key = `${selected.source}|${selected.runId ?? ""}|${selected.packagePath}|${selected.testName}`;
+
+    if (selected.source === "history") {
+      const run = selected.runId
+        ? testsViewProvider
+            .getRunHistory()
+            .find((candidate) => candidate.id === selected.runId)
+        : undefined;
+      const entry = run?.entries.find(
+        (candidate) =>
+          candidate.packagePath === selected.packagePath &&
+          candidate.testName === selected.testName,
+      );
+      if (!entry) {
+        return undefined;
+      }
+      return {
+        key,
+        source: "history" as const,
+        testName: entry.testName,
+        packagePath: entry.packagePath,
+        filePath: entry.file,
+        status: entry.status,
+        duration: entry.duration ?? 0,
+        coverage:
+          entry.packageCoverage ??
+          testsViewProvider.getPackageCoverage(entry.packagePath),
+        output: entry.output ?? "",
+        runId: run?.id,
+      };
+    }
+
+    const result = testsViewProvider.getTestResult(
+      selected.testName,
+      selected.packagePath,
+    );
+    if (!result) {
+      return undefined;
+    }
+
+    return {
+      key,
+      source: "current" as const,
+      testName: result.testName,
+      packagePath: result.packagePath,
+      filePath: result.file,
+      status: result.status,
+      duration: result.duration ?? 0,
+      coverage: testsViewProvider.getPackageCoverage(result.packagePath),
+      output: result.output.output.join(""),
+    };
+  };
+
+  const showTestOutputPanel = async (selected?: ResultSelectionRequest) => {
+    if (selected) {
+      const payload = buildSelectionPayload(selected);
+      if (payload) {
+        resultsSelectionState.set(payload as any);
+      }
+    } else {
+      const firstResult = testsViewProvider
+        .getAllTestResults()
+        .find((result) => result.testName !== "(go test runner output)");
+      if (firstResult) {
+        const payload = buildSelectionPayload({
+          source: "current",
+          testName: firstResult.testName,
+          packagePath: firstResult.packagePath,
+        });
+        if (payload) {
+          resultsSelectionState.set(payload as any);
+        }
+      }
+    }
+
+    await vscode.commands.executeCommand("goAssistantTestsLog.focus");
+  };
+
+  const buildHistoryEntries = (options?: {
+    packagePaths?: Set<string>;
+    filePath?: string;
+    testName?: string;
+    includeChildrenOfTest?: boolean;
+  }): TestRunEntry[] => {
+    const results = testsViewProvider
+      .getAllTestResults()
+      .filter((result) => result.testName !== "(go test runner output)");
+
+    const filtered = results.filter((result) => {
+      if (
+        options?.packagePaths &&
+        !options.packagePaths.has(result.packagePath)
+      ) {
+        return false;
+      }
+
+      if (options?.filePath && result.file !== options.filePath) {
+        return false;
+      }
+
+      if (options?.testName) {
+        if (result.testName === options.testName) {
+          return true;
+        }
+        if (
+          options.includeChildrenOfTest &&
+          result.testName.startsWith(`${options.testName}/`)
+        ) {
+          return true;
+        }
+        return false;
+      }
+
+      return true;
+    });
+
+    const byKey = new Map<string, TestResult>();
+    for (const result of filtered) {
+      byKey.set(`${result.packagePath}::${result.testName}`, result);
+    }
+
+    return Array.from(byKey.values())
+      .sort((a, b) => {
+        const pkgCmp = a.packagePath.localeCompare(b.packagePath);
+        return pkgCmp !== 0 ? pkgCmp : a.testName.localeCompare(b.testName);
+      })
+      .map((result) => ({
+        testName: result.testName,
+        packagePath: result.packagePath,
+        file: result.file,
+        status:
+          result.status === "pass" || result.status === "fail"
+            ? result.status
+            : "unknown",
+        duration: result.duration,
+        output: result.output.output.join(""),
+        packageCoverage:
+          testsViewProvider.getPackageCoverage(result.packagePath) ?? undefined,
+        fileCoverage:
+          testsViewProvider.getFileCoverage(result.file) ?? undefined,
+      }));
   };
 
   context.subscriptions.push(testsView);
-  context.subscriptions.push(testResultsViewDisposable);
-  context.subscriptions.push(testResultsViewProvider);
+  context.subscriptions.push(testResultsLogView);
 
   // Discover tests on activation
   const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
@@ -848,41 +993,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
           }
 
-          const historyEntries: TestRunEntry[] = [];
-          // Update all known tests belonging to this root
-          const rootModules =
-            modules.length > 0
-              ? modules.filter((m) => m.moduleRoot === root)
-              : [];
-          const allPkgs =
-            rootModules.length > 0
-              ? rootModules.flatMap((m) => m.packages)
-              : testsViewProvider.getPackages();
-          for (const pkg of allPkgs) {
-            for (const file of pkg.files) {
-              for (const test of file.tests) {
-                const testOutput = testsViewProvider.getTestOutput(
-                  test.name,
-                  pkg.packagePath,
-                );
-                const status = test.status || "unknown";
-                const duration = test.duration;
-                historyEntries.push({
-                  testName: test.name,
-                  packagePath: pkg.packagePath,
-                  file: test.file,
-                  status: status as "pass" | "fail" | "unknown",
-                  duration,
-                  output: testOutput?.output.join(""),
-                  packageCoverage:
-                    testsViewProvider.getPackageCoverage(pkg.packagePath) ??
-                    undefined,
-                  fileCoverage:
-                    testsViewProvider.getFileCoverage(test.file) ?? undefined,
-                });
-              }
-            }
-          }
+          const historyEntries = buildHistoryEntries();
 
           testsViewProvider.addToHistory("all tests", historyEntries);
           showTestOutputPanel();
@@ -949,6 +1060,55 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       showTestOutputPanel(selected);
+    },
+  );
+
+  const goToTestCommand = vscode.commands.registerCommand(
+    "go-assistant.goToTest",
+    async (item: any) => {
+      let filePath: string | undefined;
+      let line: number | undefined;
+
+      if (item?.testInfo) {
+        filePath = item.testInfo.file;
+        line = item.testInfo.line;
+      } else if (item?.subTestInfo) {
+        filePath = item.subTestInfo.file;
+        line = item.subTestInfo.line;
+      } else if (item?.historyEntry) {
+        const location = testsViewProvider.findTestLocation(
+          item.historyEntry.testName,
+          item.historyEntry.packagePath,
+        );
+        filePath = location?.file ?? item.historyEntry.file;
+        line = location?.line;
+      } else if (item?.resultTest) {
+        const location = testsViewProvider.findTestLocation(
+          item.resultTest.testName,
+          item.resultTest.packagePath,
+        );
+        filePath = location?.file ?? item.resultTest.file;
+        line = location?.line;
+      }
+
+      if (!filePath) {
+        vscode.window.showInformationMessage(
+          "Unable to locate the selected test in source files.",
+        );
+        return;
+      }
+
+      const openOptions: vscode.TextDocumentShowOptions = {
+        preview: false,
+      };
+      if (line !== undefined) {
+        const pos = new vscode.Position(Math.max(line, 0), 0);
+        openOptions.selection = new vscode.Range(pos, pos);
+      }
+
+      const uri = vscode.Uri.file(filePath);
+      const document = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(document, openOptions);
     },
   );
 
@@ -1136,31 +1296,11 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        const historyEntries: TestRunEntry[] = [];
-        for (const pkg of item.moduleInfo.packages) {
-          for (const file of pkg.files) {
-            for (const test of file.tests) {
-              historyEntries.push({
-                testName: test.name,
-                packagePath: pkg.packagePath,
-                file: test.file,
-                status: (test.status ?? "unknown") as
-                  | "pass"
-                  | "fail"
-                  | "unknown",
-                duration: test.duration,
-                output: testsViewProvider
-                  .getTestOutput(test.name, pkg.packagePath)
-                  ?.output.join(""),
-                packageCoverage:
-                  testsViewProvider.getPackageCoverage(pkg.packagePath) ??
-                  undefined,
-                fileCoverage:
-                  testsViewProvider.getFileCoverage(test.file) ?? undefined,
-              });
-            }
-          }
-        }
+        const historyEntries = buildHistoryEntries({
+          packagePaths: new Set(
+            item.moduleInfo.packages.map((pkg: any) => pkg.packagePath),
+          ),
+        });
 
         testsViewProvider.addToHistory(
           item.moduleInfo.moduleName,
@@ -1252,25 +1392,9 @@ export function activate(context: vscode.ExtensionContext) {
           result.code === 0 ? "pass" : "fail",
         );
 
-        const historyEntries: TestRunEntry[] = [];
-        for (const file of item.packageInfo.files) {
-          for (const test of file.tests) {
-            historyEntries.push({
-              testName: test.name,
-              packagePath,
-              file: test.file,
-              status: (test.status ?? "unknown") as "pass" | "fail" | "unknown",
-              duration: test.duration,
-              output: testsViewProvider
-                .getTestOutput(test.name, packagePath)
-                ?.output.join(""),
-              packageCoverage:
-                testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
-              fileCoverage:
-                testsViewProvider.getFileCoverage(test.file) ?? undefined,
-            });
-          }
-        }
+        const historyEntries = buildHistoryEntries({
+          packagePaths: new Set([packagePath]),
+        });
 
         testsViewProvider.addToHistory(
           item.packageInfo.packageName,
@@ -1370,23 +1494,10 @@ export function activate(context: vscode.ExtensionContext) {
           result.code === 0 ? "pass" : "fail",
         );
 
-        const historyEntries: TestRunEntry[] = [];
-        for (const test of item.fileInfo.tests) {
-          historyEntries.push({
-            testName: test.name,
-            packagePath,
-            file: test.file,
-            status: (test.status ?? "unknown") as "pass" | "fail" | "unknown",
-            duration: test.duration,
-            output: testsViewProvider
-              .getTestOutput(test.name, packagePath)
-              ?.output.join(""),
-            packageCoverage:
-              testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
-            fileCoverage:
-              testsViewProvider.getFileCoverage(test.file) ?? undefined,
-          });
-        }
+        const historyEntries = buildHistoryEntries({
+          packagePaths: new Set([packagePath]),
+          filePath: item.fileInfo.file,
+        });
 
         testsViewProvider.addToHistory(fileName, historyEntries);
         testsViewProvider.updateSubTestsFromOutput(
@@ -1559,34 +1670,14 @@ export function activate(context: vscode.ExtensionContext) {
           result.code === 0 ? "pass" : "fail",
         );
 
-        const current =
-          testsViewProvider
-            .getPackages()
-            .flatMap((p) => p.files)
-            .flatMap((f) => f.tests)
-            .find(
-              (t) => t.name === testName && t.packagePath === packagePath,
-            ) ?? item.testInfo;
-
-        testsViewProvider.addToHistory(testName, [
-          {
+        testsViewProvider.addToHistory(
+          testName,
+          buildHistoryEntries({
+            packagePaths: new Set([packagePath]),
             testName,
-            packagePath,
-            file: filePath,
-            status: (current.status ?? "unknown") as
-              | "pass"
-              | "fail"
-              | "unknown",
-            duration: current.duration,
-            output: testsViewProvider
-              .getTestOutput(testName, packagePath)
-              ?.output.join(""),
-            packageCoverage:
-              testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
-            fileCoverage:
-              testsViewProvider.getFileCoverage(filePath) ?? undefined,
-          },
-        ]);
+            includeChildrenOfTest: true,
+          }),
+        );
 
         testsViewProvider.updateSubTestsFromOutput(
           result.rawOutput,
@@ -1645,31 +1736,14 @@ export function activate(context: vscode.ExtensionContext) {
           result.code === 0 ? "pass" : "fail",
         );
 
-        const current = testsViewProvider
-          .getPackages()
-          .flatMap((p) => p.files)
-          .flatMap((f) => f.tests)
-          .find((t) => t.name === testName && t.packagePath === packagePath);
-
-        testsViewProvider.addToHistory(testName, [
-          {
+        testsViewProvider.addToHistory(
+          testName,
+          buildHistoryEntries({
+            packagePaths: new Set([packagePath]),
             testName,
-            packagePath,
-            file: args.filePath,
-            status: (current?.status ?? "unknown") as
-              | "pass"
-              | "fail"
-              | "unknown",
-            duration: current?.duration,
-            output: testsViewProvider
-              .getTestOutput(testName, packagePath)
-              ?.output.join(""),
-            packageCoverage:
-              testsViewProvider.getPackageCoverage(packagePath) ?? undefined,
-            fileCoverage:
-              testsViewProvider.getFileCoverage(args.filePath) ?? undefined,
-          },
-        ]);
+            includeChildrenOfTest: true,
+          }),
+        );
 
         testsViewProvider.updateSubTestsFromOutput(
           result.rawOutput,
@@ -1800,6 +1874,8 @@ export function activate(context: vscode.ExtensionContext) {
     () => {
       testsViewProvider.resetResults();
       testsViewProvider.clearHistory();
+      testsViewProvider.clearTestResults();
+      resultsSelectionState.set(undefined);
       coverageDecorator.clearDecorations();
       vscode.window.showInformationMessage("Test results and coverage reset.");
     },
@@ -3644,6 +3720,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     searchTestsCommand,
     clearTestsSearchCommand,
     openTestLogCommand,
+    goToTestCommand,
     debugAllTestsCommand,
     configureTestFlagsCommand,
     runPackageTestsCommand,

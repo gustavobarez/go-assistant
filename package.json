@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.2.3",
+  "version": "0.2.4",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -131,6 +131,11 @@
         "icon": "$(output)"
       },
       {
+        "command": "go-assistant.goToTest",
+        "title": "Go to Test",
+        "icon": "$(go-to-file)"
+      },
+      {
         "command": "go-assistant.runSubTestFromCode",
         "title": "Run Sub-Test (Tab)"
       },
@@ -226,14 +231,11 @@
       "go-assistant-tests": [
         {
           "id": "goAssistantTests",
-          "name": "Tests Explorer (Go Assistant)"
-        }
-      ],
-      "go-assistant-test-results": [
+          "name": "Tests"
+        },
         {
-          "id": "goAssistantTestResults",
-          "name": "Test Results (Go Assistant)",
-          "type": "webview"
+          "id": "goAssistantTestsLog",
+          "name": "Log"
         }
       ]
     },
@@ -248,11 +250,6 @@
           "id": "go-assistant-tests",
           "title": "Tests (Go Assistant)",
           "icon": "$(beaker)"
-        },
-        {
-          "id": "go-assistant-test-results",
-          "title": "Test Results (Go Assistant)",
-          "icon": "$(output)"
         }
       ]
     },
@@ -356,6 +353,11 @@
           "group": "inline@3"
         },
         {
+          "command": "go-assistant.goToTest",
+          "when": "view == goAssistantTests && viewItem == test",
+          "group": "inline@4"
+        },
+        {
           "command": "go-assistant.rerunLastTests",
           "when": "view == goAssistantTests && viewItem == historyRoot",
           "group": "inline@1"
@@ -386,7 +388,7 @@
           "group": "inline@2"
         },
         {
-          "command": "go-assistant.openTestLog",
+          "command": "go-assistant.goToTest",
           "when": "view == goAssistantTests && viewItem == subtest",
           "group": "inline@3"
         },
@@ -406,8 +408,23 @@
           "group": "inline@3"
         },
         {
+          "command": "go-assistant.goToTest",
+          "when": "view == goAssistantTests && viewItem == testWithSubs",
+          "group": "inline@4"
+        },
+        {
           "command": "go-assistant.openTestLog",
           "when": "view == goAssistantTests && viewItem == historyTest",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.goToTest",
+          "when": "view == goAssistantTests && viewItem == historyTest",
+          "group": "inline@2"
+        },
+        {
+          "command": "go-assistant.goToTest",
+          "when": "view == goAssistantTests && viewItem == historyTestNoLog",
           "group": "inline@1"
         }
       ]
