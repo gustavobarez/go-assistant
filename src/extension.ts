@@ -6,11 +6,13 @@ import * as vscode from "vscode";
 import { GoCodeActionProvider } from "./goCodeActionProvider";
 import { GoCodeLensProvider } from "./goCodeLensProvider";
 import { GoCoverageDecorator } from "./goCoverageDecorator";
+import { GoDependenciesViewProvider } from "./goDependenciesView";
 import { GoDiagnosticsProvider } from "./goDiagnosticsProvider";
 import { GoFileMoveHelper } from "./goFileMoveHelper";
 import { GoImplementInterfaceProvider } from "./goImplementInterfaceProvider";
 import { GoInlayHintsProvider } from "./goInlayHintsProvider";
 import { GoInlineValuesProvider } from "./goInlineValuesProvider";
+import { GoModCodeActionProvider } from "./goModCodeActionProvider";
 import { findGoModForWorkspace, getGoModuleRoot } from "./goModFinder";
 import { GoProtoCodeLensProvider } from "./goProtoCodeLensProvider";
 import { GoReferencesViewProvider, SymbolInfo } from "./goReferencesView";
@@ -43,6 +45,10 @@ function debugLog(message: string): void {
 
 const testRunnerOutputChannel = vscode.window.createOutputChannel(
   "Go Assistant Test Runner",
+);
+
+const goModOutputChannel = vscode.window.createOutputChannel(
+  "Go Assistant Go Mod",
 );
 
 function logTestRunner(
@@ -267,6 +273,9 @@ function applyCoverageFromProfile(
   coverageFile: string,
   cwd: string,
   testsViewProvider: GoTestsViewProvider,
+  options?: {
+    targetTests?: string[];
+  },
 ): void {
   if (!fs.existsSync(coverageFile)) {
     return;
@@ -335,11 +344,16 @@ function applyCoverageFromProfile(
     packageTotals.set(pkg, pkgAcc);
   }
 
+  const targetTests = options?.targetTests
+    ? new Set(options.targetTests)
+    : undefined;
+
   for (const [filePath, totals] of fileTotals.entries()) {
     if (totals.total > 0) {
       testsViewProvider.setFileCoverage(
         filePath,
         (totals.covered / totals.total) * 100,
+        targetTests,
       );
     }
   }
@@ -348,6 +362,7 @@ function applyCoverageFromProfile(
       testsViewProvider.setPackageCoverage(
         packagePath,
         (totals.covered / totals.total) * 100,
+        targetTests,
       );
     }
   }
@@ -499,6 +514,76 @@ export function activate(context: vscode.ExtensionContext) {
   );
   testResultsLogView.title = "Log";
 
+  const dependenciesViewProvider = new GoDependenciesViewProvider();
+  let dependenciesView: vscode.TreeView<any> | undefined;
+  try {
+    dependenciesView = vscode.window.createTreeView("goAssistantDependencies", {
+      treeDataProvider: dependenciesViewProvider,
+      showCollapseAll: true,
+    });
+    dependenciesView.title = "External Dependencies";
+  } catch (error) {
+    console.error("Failed to create goAssistantDependencies view:", error);
+    vscode.window
+      .showWarningMessage(
+        "Go Assistant: could not initialize External Dependencies view. Reload window to apply extension update.",
+        "Reload Window",
+      )
+      .then((choice) => {
+        if (choice === "Reload Window") {
+          void vscode.commands.executeCommand("workbench.action.reloadWindow");
+        }
+      });
+  }
+
+  const mergeResultsPayload = (
+    key: string,
+    title: string,
+    coverage: number | null,
+    results: TestResult[],
+  ) => {
+    const ordered = [...results].sort((a, b) => {
+      if (a.packagePath !== b.packagePath) {
+        return a.packagePath.localeCompare(b.packagePath);
+      }
+      if (a.file !== b.file) {
+        return a.file.localeCompare(b.file);
+      }
+      return a.testName.localeCompare(b.testName);
+    });
+
+    const combinedOutput = ordered
+      .map((result) => {
+        const lines = result.output.output.join("").trimEnd();
+        const duration = result.duration
+          ? `${result.duration.toFixed(2)}s`
+          : "0.00s";
+        const header = `=== ${result.testName} (${duration})`;
+        return lines ? `${header}\n${lines}` : header;
+      })
+      .join("\n\n");
+
+    const hasFail = ordered.some((result) => result.status === "fail");
+    const hasPass = ordered.some((result) => result.status === "pass");
+    const status = hasFail ? "fail" : hasPass ? "pass" : "unknown";
+    const duration = ordered.reduce(
+      (sum, result) => sum + (result.duration ?? 0),
+      0,
+    );
+
+    return {
+      key,
+      source: "current" as const,
+      testName: title,
+      packagePath: ordered[0]?.packagePath ?? "",
+      filePath: ordered[0]?.file ?? "",
+      status,
+      duration,
+      coverage,
+      output: combinedOutput,
+    };
+  };
+
   const buildSelectionPayload = (selected: ResultSelectionRequest) => {
     const key = `${selected.source}|${selected.runId ?? ""}|${selected.packagePath}|${selected.testName}`;
 
@@ -508,7 +593,113 @@ export function activate(context: vscode.ExtensionContext) {
             .getRunHistory()
             .find((candidate) => candidate.id === selected.runId)
         : undefined;
-      const entry = run?.entries.find(
+
+      if (!run) {
+        return undefined;
+      }
+
+      const packageInModule = (packagePath: string, moduleRoot: string) => {
+        const rel = path.relative(moduleRoot, packagePath);
+        return !rel.startsWith("..") && !path.isAbsolute(rel);
+      };
+
+      const mergeHistoryEntriesPayload = (
+        historyKey: string,
+        title: string,
+        entries: TestRunEntry[],
+        coverage: number | null,
+      ) => {
+        if (entries.length === 0) {
+          return undefined;
+        }
+        const ordered = [...entries].sort((a, b) => {
+          if (a.packagePath !== b.packagePath) {
+            return a.packagePath.localeCompare(b.packagePath);
+          }
+          if (a.file !== b.file) {
+            return a.file.localeCompare(b.file);
+          }
+          return a.testName.localeCompare(b.testName);
+        });
+
+        const output = ordered
+          .map((entry) => {
+            const duration = entry.duration
+              ? `${entry.duration.toFixed(2)}s`
+              : "0.00s";
+            const header = `=== ${entry.testName} (${duration})`;
+            const body = (entry.output ?? "").trimEnd();
+            return body ? `${header}\n${body}` : header;
+          })
+          .join("\n\n");
+
+        const hasFail = ordered.some((entry) => entry.status === "fail");
+        const hasPass = ordered.some((entry) => entry.status === "pass");
+        const status = hasFail ? "fail" : hasPass ? "pass" : "unknown";
+        const duration = ordered.reduce(
+          (sum, entry) => sum + (entry.duration ?? 0),
+          0,
+        );
+
+        return {
+          key: historyKey,
+          source: "history" as const,
+          testName: title,
+          packagePath: ordered[0]?.packagePath ?? "",
+          filePath: ordered[0]?.file ?? "",
+          status,
+          duration,
+          coverage,
+          output,
+          runId: run.id,
+        };
+      };
+
+      if (selected.scope === "module" && selected.moduleRoot) {
+        const entries = run.entries.filter((entry) =>
+          packageInModule(entry.packagePath, selected.moduleRoot!),
+        );
+        return mergeHistoryEntriesPayload(
+          `${key}|history-module|${selected.moduleRoot}`,
+          `${selected.label ?? selected.moduleRoot} · module`,
+          entries,
+          null,
+        );
+      }
+
+      if (selected.scope === "package") {
+        const entries = run.entries.filter(
+          (entry) => entry.packagePath === selected.packagePath,
+        );
+        const coverage =
+          entries.find((entry) => entry.packageCoverage !== undefined)
+            ?.packageCoverage ?? null;
+        return mergeHistoryEntriesPayload(
+          `${key}|history-package|${selected.packagePath}`,
+          `${selected.label ?? selected.packagePath} · package`,
+          entries,
+          coverage,
+        );
+      }
+
+      if (selected.scope === "file" && selected.filePath) {
+        const entries = run.entries.filter(
+          (entry) =>
+            entry.packagePath === selected.packagePath &&
+            entry.file === selected.filePath,
+        );
+        const coverage =
+          entries.find((entry) => entry.fileCoverage !== undefined)
+            ?.fileCoverage ?? null;
+        return mergeHistoryEntriesPayload(
+          `${key}|history-file|${selected.filePath}`,
+          `${selected.label ?? path.basename(selected.filePath)} · file`,
+          entries,
+          coverage,
+        );
+      }
+
+      const entry = run.entries.find(
         (candidate) =>
           candidate.packagePath === selected.packagePath &&
           candidate.testName === selected.testName,
@@ -516,6 +707,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (!entry) {
         return undefined;
       }
+
       return {
         key,
         source: "history" as const,
@@ -530,6 +722,55 @@ export function activate(context: vscode.ExtensionContext) {
         output: entry.output ?? "",
         runId: run?.id,
       };
+    }
+
+    if (selected.scope === "file" && selected.filePath) {
+      const results = testsViewProvider
+        .getTestResultsByFile(selected.filePath)
+        .filter((result) => result.testName !== "(go test runner output)");
+      if (results.length === 0) {
+        return undefined;
+      }
+      const title = selected.label ?? path.basename(selected.filePath);
+      return mergeResultsPayload(
+        `${key}|file|${selected.filePath}`,
+        `${title} · file`,
+        testsViewProvider.getFileCoverage(selected.filePath),
+        results,
+      );
+    }
+
+    if (selected.scope === "package") {
+      const packagePath = selected.packagePath;
+      const results = testsViewProvider
+        .getTestResultsByPackage(packagePath)
+        .filter((result) => result.testName !== "(go test runner output)");
+      if (results.length === 0) {
+        return undefined;
+      }
+      const title = selected.label ?? packagePath;
+      return mergeResultsPayload(
+        `${key}|package|${packagePath}`,
+        `${title} · package`,
+        testsViewProvider.getPackageCoverage(packagePath),
+        results,
+      );
+    }
+
+    if (selected.scope === "module" && selected.moduleRoot) {
+      const results = testsViewProvider
+        .getTestResultsByModule(selected.moduleRoot)
+        .filter((result) => result.testName !== "(go test runner output)");
+      if (results.length === 0) {
+        return undefined;
+      }
+      const title = selected.label ?? selected.moduleRoot;
+      return mergeResultsPayload(
+        `${key}|module|${selected.moduleRoot}`,
+        `${title} · module`,
+        null,
+        results,
+      );
     }
 
     const result = testsViewProvider.getTestResult(
@@ -558,6 +799,10 @@ export function activate(context: vscode.ExtensionContext) {
       const payload = buildSelectionPayload(selected);
       if (payload) {
         resultsSelectionState.set(payload as any);
+      } else {
+        vscode.window.showInformationMessage(
+          "No log available for this selection yet.",
+        );
       }
     } else {
       const firstResult = testsViewProvider
@@ -584,6 +829,29 @@ export function activate(context: vscode.ExtensionContext) {
     testName?: string;
     includeChildrenOfTest?: boolean;
   }): TestRunEntry[] => {
+    const normalizeSubtestName = (value: string): string =>
+      value
+        .split("/")
+        .map((segment, index) =>
+          index === 0 ? segment : segment.replace(/ /g, "_"),
+        )
+        .join("/");
+
+    const testNameMatches = (candidate: string, target: string): boolean => {
+      const candidateNorm = normalizeSubtestName(candidate);
+      const targetNorm = normalizeSubtestName(target);
+      return candidate === target || candidateNorm === targetNorm;
+    };
+
+    const isChildOfTest = (candidate: string, target: string): boolean => {
+      const candidateNorm = normalizeSubtestName(candidate);
+      const targetNorm = normalizeSubtestName(target);
+      return (
+        candidate.startsWith(`${target}/`) ||
+        candidateNorm.startsWith(`${targetNorm}/`)
+      );
+    };
+
     const results = testsViewProvider
       .getAllTestResults()
       .filter((result) => result.testName !== "(go test runner output)");
@@ -601,12 +869,12 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       if (options?.testName) {
-        if (result.testName === options.testName) {
+        if (testNameMatches(result.testName, options.testName)) {
           return true;
         }
         if (
           options.includeChildrenOfTest &&
-          result.testName.startsWith(`${options.testName}/`)
+          isChildOfTest(result.testName, options.testName)
         ) {
           return true;
         }
@@ -645,6 +913,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(testsView);
   context.subscriptions.push(testResultsLogView);
+  if (dependenciesView) {
+    context.subscriptions.push(dependenciesView);
+  }
 
   // Discover tests on activation
   const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
@@ -713,6 +984,20 @@ export function activate(context: vscode.ExtensionContext) {
       providedCodeActionKinds: GoCodeActionProvider.providedCodeActionKinds,
     },
   );
+
+  const goModCodeActionProvider = new GoModCodeActionProvider();
+  const goModCodeActionDisposable =
+    vscode.languages.registerCodeActionsProvider(
+      [
+        { language: "go.mod", scheme: "file" },
+        { pattern: "**/go.mod", scheme: "file" },
+      ],
+      goModCodeActionProvider,
+      {
+        providedCodeActionKinds:
+          GoModCodeActionProvider.providedCodeActionKinds,
+      },
+    );
 
   // Initialize Diagnostics provider for Go files
   const diagnosticsProvider = new GoDiagnosticsProvider();
@@ -1010,16 +1295,51 @@ export function activate(context: vscode.ExtensionContext) {
     "go-assistant.openTestLog",
     async (...args: any[]) => {
       const item = args[0];
-      let selected:
-        | {
-            source: "current" | "history";
-            testName: string;
-            packagePath: string;
-            runId?: string;
-          }
-        | undefined;
+      let selected: ResultSelectionRequest | undefined;
 
-      if (item?.historyEntry) {
+      if (
+        item?.itemType === "historyModule" &&
+        item?.historyRun &&
+        item?.historyModuleRoot
+      ) {
+        selected = {
+          source: "history",
+          scope: "module",
+          label: item.label,
+          moduleRoot: item.historyModuleRoot,
+          testName: item.label,
+          packagePath: item.historyModuleRoot,
+          runId: item.historyRun.id,
+        };
+      } else if (
+        item?.itemType === "historyPackage" &&
+        item?.historyRun &&
+        item?.historyPackagePath
+      ) {
+        selected = {
+          source: "history",
+          scope: "package",
+          label: item.label,
+          testName: item.label,
+          packagePath: item.historyPackagePath,
+          runId: item.historyRun.id,
+        };
+      } else if (
+        item?.itemType === "historyFile" &&
+        item?.historyRun &&
+        item?.historyPackagePath &&
+        item?.historyFilePath
+      ) {
+        selected = {
+          source: "history",
+          scope: "file",
+          label: item.label,
+          filePath: item.historyFilePath,
+          testName: item.label,
+          packagePath: item.historyPackagePath,
+          runId: item.historyRun.id,
+        };
+      } else if (item?.itemType === "historyTest" && item?.historyEntry) {
         selected = {
           source: "history",
           testName: item.historyEntry.testName,
@@ -1038,17 +1358,43 @@ export function activate(context: vscode.ExtensionContext) {
           testName: args[0],
           packagePath: args[1],
         };
+      } else if (item?.subTestInfo) {
+        selected = {
+          source: "current",
+          testName: item.subTestInfo.fullName,
+          packagePath: item.subTestInfo.packagePath,
+        };
       } else if (item?.testInfo) {
         selected = {
           source: "current",
           testName: item.testInfo.name,
           packagePath: item.testInfo.packagePath,
         };
-      } else if (item?.subTestInfo) {
+      } else if (item?.fileInfo) {
         selected = {
           source: "current",
-          testName: item.subTestInfo.fullName,
-          packagePath: item.subTestInfo.packagePath,
+          scope: "file",
+          label: path.basename(item.fileInfo.file),
+          filePath: item.fileInfo.file,
+          testName: path.basename(item.fileInfo.file),
+          packagePath: item.fileInfo.packagePath,
+        };
+      } else if (item?.packageInfo) {
+        selected = {
+          source: "current",
+          scope: "package",
+          label: item.packageInfo.packageName,
+          testName: item.packageInfo.packageName,
+          packagePath: item.packageInfo.packagePath,
+        };
+      } else if (item?.moduleInfo) {
+        selected = {
+          source: "current",
+          scope: "module",
+          label: item.moduleInfo.moduleName,
+          moduleRoot: item.moduleInfo.moduleRoot,
+          testName: item.moduleInfo.moduleName,
+          packagePath: item.moduleInfo.packages?.[0]?.packagePath ?? "",
         };
       }
 
@@ -1683,7 +2029,9 @@ export function activate(context: vscode.ExtensionContext) {
           result.rawOutput,
           packagePath,
         );
-        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider, {
+          targetTests: [testName],
+        });
         const loaded =
           await coverageDecorator.loadCoverageFromFile(coverageFile);
         if (loaded) {
@@ -1749,7 +2097,9 @@ export function activate(context: vscode.ExtensionContext) {
           result.rawOutput,
           packagePath,
         );
-        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider, {
+          targetTests: [testName],
+        });
         const loaded =
           await coverageDecorator.loadCoverageFromFile(coverageFile);
         if (loaded) {
@@ -1809,7 +2159,10 @@ export function activate(context: vscode.ExtensionContext) {
         );
 
         if (spec.type !== "all") {
-          applyCoverageFromProfile(coverageFile, cwd, testsViewProvider);
+          applyCoverageFromProfile(coverageFile, cwd, testsViewProvider, {
+            targetTests:
+              spec.type === "test" && spec.label ? [spec.label] : undefined,
+          });
           const loaded =
             await coverageDecorator.loadCoverageFromFile(coverageFile);
           if (loaded) {
@@ -1980,6 +2333,12 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         showTestOutputPanel();
+        testsViewProvider.setLastRunSpec({
+          type: "test",
+          label: fullName,
+          packagePath,
+          testPattern: runPattern,
+        });
         const result = await runTestsWithJSON(
           packagePath,
           [...splitGoArgs(extraFlags), "-run", runPattern],
@@ -1994,12 +2353,20 @@ export function activate(context: vscode.ExtensionContext) {
           result.rawOutput,
           packagePath,
         );
-        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider);
+        applyCoverageFromProfile(coverageFile, packagePath, testsViewProvider, {
+          targetTests: [fullName, parentName],
+        });
         const loaded =
           await coverageDecorator.loadCoverageFromFile(coverageFile);
         if (loaded) {
           coverageDecorator.applyDecorationsToAllEditors();
         }
+        const historyEntries = buildHistoryEntries({
+          packagePaths: new Set([packagePath]),
+          testName: fullName,
+          includeChildrenOfTest: true,
+        });
+        testsViewProvider.addToHistory(fullName, historyEntries);
         showTestOutputPanel();
       } catch (error) {
         vscode.window.showErrorMessage(
@@ -2139,6 +2506,7 @@ export function activate(context: vscode.ExtensionContext) {
     "go-assistant.clearCoverage",
     async () => {
       coverageDecorator.clearDecorations();
+      testsViewProvider.clearCoverageData();
       vscode.window.showInformationMessage("Coverage decorations cleared");
     },
   );
@@ -3456,6 +3824,152 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     },
   );
 
+  const refreshDependenciesViewCommand = vscode.commands.registerCommand(
+    "go-assistant.refreshDependenciesView",
+    () => {
+      dependenciesViewProvider.refresh();
+    },
+  );
+
+  const searchDependenciesCommand = vscode.commands.registerCommand(
+    "go-assistant.searchDependencies",
+    async () => {
+      const current = dependenciesViewProvider.getSearchQuery();
+      const value = await vscode.window.showInputBox({
+        title: "Search External Dependencies",
+        placeHolder: "Type module path/version and press Enter",
+        value: current,
+        prompt: "Leave empty to clear the search",
+      });
+
+      if (value === undefined) {
+        return;
+      }
+
+      if (!value.trim()) {
+        dependenciesViewProvider.clearSearchQuery();
+        return;
+      }
+
+      dependenciesViewProvider.setSearchQuery(value);
+    },
+  );
+
+  const openDependencyFileCommand = vscode.commands.registerCommand(
+    "go-assistant.openDependencyFile",
+    async (filePath: string) => {
+      if (!filePath) {
+        return;
+      }
+      const document = await vscode.workspace.openTextDocument(
+        vscode.Uri.file(filePath),
+      );
+      await vscode.window.showTextDocument(document, {
+        preview: false,
+      });
+    },
+  );
+
+  const goModWhyDependencyCommand = vscode.commands.registerCommand(
+    "go-assistant.goModWhyDependency",
+    async (uri: vscode.Uri, dependencyPath: string) => {
+      if (!uri || !dependencyPath) {
+        vscode.window.showErrorMessage("Invalid dependency selection");
+        return;
+      }
+
+      const moduleRoot = path.dirname(uri.fsPath);
+      goModOutputChannel.show(true);
+      goModOutputChannel.appendLine(`$ go mod why -m ${dependencyPath}`);
+
+      try {
+        const output = await new Promise<string>((resolve, reject) => {
+          execFile(
+            "go",
+            ["mod", "why", "-m", dependencyPath],
+            {
+              cwd: moduleRoot,
+              maxBuffer: 10 * 1024 * 1024,
+            },
+            (error, stdout, stderr) => {
+              if (error) {
+                reject(new Error(stderr || error.message));
+                return;
+              }
+              resolve(stdout);
+            },
+          );
+        });
+
+        goModOutputChannel.appendLine(output.trim() || "(no output)");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        goModOutputChannel.appendLine(message);
+        vscode.window.showErrorMessage(
+          `Failed to run go mod why for ${dependencyPath}: ${message}`,
+        );
+      }
+    },
+  );
+
+  const goModUpdateDependencyCommand = vscode.commands.registerCommand(
+    "go-assistant.goModUpdateDependency",
+    async (uri: vscode.Uri, dependencyPath: string) => {
+      if (!uri || !dependencyPath) {
+        vscode.window.showErrorMessage("Invalid dependency selection");
+        return;
+      }
+
+      const moduleRoot = path.dirname(uri.fsPath);
+      goModOutputChannel.show(true);
+
+      const runGo = (args: string[]): Promise<string> =>
+        new Promise((resolve, reject) => {
+          goModOutputChannel.appendLine(`$ go ${args.join(" ")}`);
+          execFile(
+            "go",
+            args,
+            {
+              cwd: moduleRoot,
+              maxBuffer: 10 * 1024 * 1024,
+            },
+            (error, stdout, stderr) => {
+              if (stdout?.trim()) {
+                goModOutputChannel.appendLine(stdout.trim());
+              }
+
+              if (error) {
+                const message = stderr?.trim() || error.message;
+                goModOutputChannel.appendLine(message);
+                reject(new Error(message));
+                return;
+              }
+
+              if (stderr?.trim()) {
+                goModOutputChannel.appendLine(stderr.trim());
+              }
+              resolve(stdout);
+            },
+          );
+        });
+
+      try {
+        await runGo(["get", `${dependencyPath}@latest`]);
+        await runGo(["mod", "tidy"]);
+
+        dependenciesViewProvider.refresh();
+        vscode.window.showInformationMessage(
+          `Dependency updated: ${dependencyPath}`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(
+          `Failed to update ${dependencyPath}: ${message}`,
+        );
+      }
+    },
+  );
+
   // Command: show Run/Debug/Profile picker for a test function (code lens button)
   const runTestWithOptionsCommand = vscode.commands.registerCommand(
     "go-assistant.runTestWithOptions",
@@ -3708,6 +4222,7 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     protoCodeLensDisposable,
     inlayHintsDisposable,
     codeActionDisposable,
+    goModCodeActionDisposable,
     inlineValuesDisposable,
     implementInterfaceCommand,
     showReferencesCommand,
@@ -3760,6 +4275,11 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     fileMoveHelper,
     runMainCommand,
     debugMainCommand,
+    refreshDependenciesViewCommand,
+    searchDependenciesCommand,
+    openDependencyFileCommand,
+    goModWhyDependencyCommand,
+    goModUpdateDependencyCommand,
     runTestWithOptionsCommand,
     runSubTestFromCodeCommand,
     selectProfileCommand,

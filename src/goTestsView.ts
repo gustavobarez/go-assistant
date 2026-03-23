@@ -278,6 +278,7 @@ type TestTreeItemType =
   | "root"
   | "historyRoot"
   | "historyRun"
+  | "historyModule"
   | "historyPackage"
   | "historyFile"
   | "historyTest"
@@ -313,6 +314,7 @@ class TestTreeItem extends vscode.TreeItem {
     public readonly resultTest?: TestResult,
     public readonly historyPackagePath?: string,
     public readonly historyFilePath?: string,
+    public readonly historyModuleRoot?: string,
   ) {
     super(label, collapsibleState);
 
@@ -509,6 +511,13 @@ class TestTreeItem extends vscode.TreeItem {
         }
         break;
 
+      case "historyModule":
+        this.iconPath = new vscode.ThemeIcon("package");
+        if (historyModuleRoot) {
+          this.tooltip = historyModuleRoot;
+        }
+        break;
+
       case "historyPackage":
         this.iconPath = new vscode.ThemeIcon("symbol-namespace");
         if (historyPackagePath) {
@@ -547,11 +556,7 @@ class TestTreeItem extends vscode.TreeItem {
               ? `${this.description} · ${coverageParts.join(" · ")}`
               : coverageParts.join(" · ");
           }
-          if (
-            this.collapsibleState === vscode.TreeItemCollapsibleState.None &&
-            historyEntry.output &&
-            historyEntry.output.trim().length > 0
-          ) {
+          if (this.collapsibleState === vscode.TreeItemCollapsibleState.None) {
             this.command = {
               command: "go-assistant.openTestLog",
               title: "View Test Log",
@@ -911,6 +916,65 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     return `${packagePath}::${testName}`;
   }
 
+  private candidateTestNames(testName: string): string[] {
+    const base = this.sanitizeTestName(testName);
+    if (!base) {
+      return [];
+    }
+
+    const asUnderscore = base
+      .split("/")
+      .map((segment, index) =>
+        index === 0 ? segment : segment.replace(/ /g, "_"),
+      )
+      .join("/");
+    const asSpace = base
+      .split("/")
+      .map((segment, index) =>
+        index === 0 ? segment : segment.replace(/_/g, " "),
+      )
+      .join("/");
+
+    return [...new Set([base, asUnderscore, asSpace])];
+  }
+
+  private hasResultForTest(packagePath: string, testName: string): boolean {
+    if (!packagePath || !testName) {
+      return false;
+    }
+    return this.candidateTestNames(testName).some((candidate) =>
+      this.testResults.has(this.makeResultKey(packagePath, candidate)),
+    );
+  }
+
+  private clearCoverageState(): void {
+    this.packageCoverage.clear();
+    this.fileCoverage.clear();
+
+    for (const mod of this.modules) {
+      for (const pkg of mod.packages) {
+        pkg.coverage = undefined;
+        for (const file of pkg.files) {
+          file.coverage = undefined;
+          for (const test of file.tests) {
+            test.fileCoverage = undefined;
+            test.packageCoverage = undefined;
+            if (test.subTests) {
+              for (const sub of test.subTests) {
+                sub.fileCoverage = undefined;
+                sub.packageCoverage = undefined;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    for (const result of this.testResults.values()) {
+      result.output.coverage = undefined;
+    }
+  }
+
   private markTestRunning(packagePath: string, testName: string): void {
     if (!testName) {
       return;
@@ -956,25 +1020,25 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       return null;
     }
 
-    const runMatch = line.match(/^=== RUN\s+(\S+)/);
+    const runMatch = line.match(/^=== RUN\s+(.+)$/);
     if (runMatch) {
       const testName = this.sanitizeTestName(runMatch[1]);
       return testName ? { testName, action: "run" } : null;
     }
 
-    const passMatch = line.match(/^--- PASS:\s+(\S+)/);
+    const passMatch = line.match(/^--- PASS:\s+(.+?)(?:\s+\([\d.]+s\))?$/);
     if (passMatch) {
       const testName = this.sanitizeTestName(passMatch[1]);
       return testName ? { testName, action: "pass" } : null;
     }
 
-    const failMatch = line.match(/^--- FAIL:\s+(\S+)/);
+    const failMatch = line.match(/^--- FAIL:\s+(.+?)(?:\s+\([\d.]+s\))?$/);
     if (failMatch) {
       const testName = this.sanitizeTestName(failMatch[1]);
       return testName ? { testName, action: "fail" } : null;
     }
 
-    const skipMatch = line.match(/^--- SKIP:\s+(\S+)/);
+    const skipMatch = line.match(/^--- SKIP:\s+(.+?)(?:\s+\([\d.]+s\))?$/);
     if (skipMatch) {
       const testName = this.sanitizeTestName(skipMatch[1]);
       return testName ? { testName, action: "skip" } : null;
@@ -990,7 +1054,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     testName = testName.replace(/\(\d+(?:\.\d+)?s\)$/g, "");
     testName = testName.replace(/[\s,;:]+$/g, "");
     testName = testName.replace(/^["']+|["']+$/g, "");
-    return /^[-\w./]+$/.test(testName) ? testName : "";
+    return testName;
   }
 
   private filterTestsByLastRunSpec(
@@ -1315,6 +1379,44 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     );
   }
 
+  private resolveHistoryModuleInfo(packagePath: string): {
+    moduleRoot: string;
+    moduleName: string;
+  } {
+    let bestModule: TestModuleInfo | undefined;
+    let bestLength = -1;
+
+    for (const mod of this.modules) {
+      const rel = path.relative(mod.moduleRoot, packagePath);
+      if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+        if (mod.moduleRoot.length > bestLength) {
+          bestLength = mod.moduleRoot.length;
+          bestModule = mod;
+        }
+      }
+    }
+
+    if (bestModule) {
+      return {
+        moduleRoot: bestModule.moduleRoot,
+        moduleName: bestModule.moduleName,
+      };
+    }
+
+    return {
+      moduleRoot: packagePath,
+      moduleName: path.basename(packagePath) || packagePath,
+    };
+  }
+
+  private packageBelongsToHistoryModule(
+    packagePath: string,
+    moduleRoot: string,
+  ): boolean {
+    const rel = path.relative(moduleRoot, packagePath);
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  }
+
   private createHistoryTestNode(
     run: TestRunHistory,
     packagePath: string,
@@ -1339,7 +1441,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     const duration = exactEntry?.duration;
     const label = testName.split("/").pop() ?? testName;
     const output = exactEntry?.output;
-    const hasLog = this.hasMeaningfulLog(output);
+    const hasLog = exactEntry !== undefined;
 
     const nodeEntry: TestRunEntry = {
       testName,
@@ -1474,25 +1576,19 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       return element.fileInfo.tests
         .filter((test) => this.testMatchesSearch(test))
         .map((test) => {
-          if (
-            test.packageCoverage === undefined &&
-            element.packageInfo?.coverage !== undefined
-          ) {
-            test.packageCoverage = element.packageInfo.coverage;
-          }
-          if (
-            test.fileCoverage === undefined &&
-            element.fileInfo?.coverage !== undefined
-          ) {
-            test.fileCoverage = element.fileInfo.coverage;
-          }
           return new TestTreeItem(
             test.name,
             test.subTests !== undefined
               ? vscode.TreeItemCollapsibleState.Collapsed
               : vscode.TreeItemCollapsibleState.None,
             "test",
-            test.subTests !== undefined ? "testWithSubs" : "test",
+            test.subTests !== undefined
+              ? this.hasResultForTest(test.packagePath, test.name)
+                ? "testWithSubsHasLog"
+                : "testWithSubs"
+              : this.hasResultForTest(test.packagePath, test.name)
+                ? "testHasLog"
+                : "test",
             test,
             element.fileInfo,
             element.packageInfo,
@@ -1529,7 +1625,9 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
               sub.name,
               vscode.TreeItemCollapsibleState.None,
               "subtest",
-              "subtest",
+              this.hasResultForTest(sub.packagePath, sub.fullName)
+                ? "subtestHasLog"
+                : "subtest",
               element.testInfo,
               element.fileInfo,
               element.packageInfo,
@@ -1566,10 +1664,76 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
         });
     }
 
-    // History run → test results
+    // History run → modules
     if (element.itemType === "historyRun" && element.historyRun) {
+      const byModule = new Map<
+        string,
+        {
+          moduleName: string;
+          entries: TestRunEntry[];
+        }
+      >();
+
+      for (const entry of element.historyRun.entries) {
+        const moduleInfo = this.resolveHistoryModuleInfo(entry.packagePath);
+        if (!byModule.has(moduleInfo.moduleRoot)) {
+          byModule.set(moduleInfo.moduleRoot, {
+            moduleName: moduleInfo.moduleName,
+            entries: [],
+          });
+        }
+        byModule.get(moduleInfo.moduleRoot)!.entries.push(entry);
+      }
+
+      return [...byModule.entries()]
+        .sort(([, a], [, b]) => a.moduleName.localeCompare(b.moduleName))
+        .map(([moduleRoot, module]) => {
+          const leaves = this.historyLeafEntries(module.entries);
+          const status = this.summarizeHistoryStatus(module.entries);
+          const item = new TestTreeItem(
+            module.moduleName,
+            vscode.TreeItemCollapsibleState.Collapsed,
+            "historyModule",
+            "historyModule",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            element.historyRun,
+            {
+              testName: module.moduleName,
+              packagePath: moduleRoot,
+              file: "",
+              status,
+            },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            moduleRoot,
+          );
+          item.description = `${leaves.length} test${leaves.length !== 1 ? "s" : ""}`;
+          return item;
+        });
+    }
+
+    // History module → packages
+    if (
+      element.itemType === "historyModule" &&
+      element.historyRun &&
+      element.historyModuleRoot
+    ) {
       const byPackage = new Map<string, TestRunEntry[]>();
       for (const entry of element.historyRun.entries) {
+        if (
+          !this.packageBelongsToHistoryModule(
+            entry.packagePath,
+            element.historyModuleRoot,
+          )
+        ) {
+          continue;
+        }
         if (!byPackage.has(entry.packagePath)) {
           byPackage.set(entry.packagePath, []);
         }
@@ -1603,6 +1767,8 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             undefined,
             undefined,
             packagePath,
+            undefined,
+            element.historyModuleRoot,
           );
           const leaves = this.historyLeafEntries(entries);
           item.description = `${leaves.length} test${leaves.length !== 1 ? "s" : ""}`;
@@ -1651,6 +1817,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             undefined,
             element.historyPackagePath,
             filePath,
+            element.historyModuleRoot,
           );
           const leaves = this.historyLeafEntries(entries);
           item.description = `${leaves.length} test${leaves.length !== 1 ? "s" : ""}`;
@@ -1806,11 +1973,11 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     >();
 
     // Parse === RUN   TestFoo/sub_name
-    const runRegex = /=== RUN\s+(\w+)\/(\S+)/gm;
+    const runRegex = /=== RUN\s+(\w+)\/(.+)$/gm;
     let m: RegExpExecArray | null;
     while ((m = runRegex.exec(normalizedOutput)) !== null) {
       const parent = m[1];
-      const fullName = this.sanitizeTestName(`${parent}/${m[2]}`);
+      const fullName = this.sanitizeTestName(`${parent}/${m[2].trim()}`);
       const rawSub = fullName.split("/")[1];
       if (!rawSub) {
         continue;
@@ -1824,10 +1991,10 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     }
 
     // Parse --- PASS/FAIL: TestFoo/sub_name (0.01s)
-    const resultRegex = /--- (PASS|FAIL):\s+(\w+)\/(\S+)\s+\(([\d.]+)s\)/gm;
+    const resultRegex = /--- (PASS|FAIL):\s+(\w+)\/(.+?)\s+\(([\d.]+)s\)$/gm;
     while ((m = resultRegex.exec(normalizedOutput)) !== null) {
       const parent = m[2];
-      const fullName = this.sanitizeTestName(`${parent}/${m[3]}`);
+      const fullName = this.sanitizeTestName(`${parent}/${m[3].trim()}`);
       const rawSub = fullName.split("/")[1];
       if (!rawSub) {
         continue;
@@ -2342,7 +2509,11 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
             /coverage:\s*([\d.]+)%\s+of statements/i,
           );
           if (coverageMatch) {
-            this.setPackageCoverage(packagePath, parseFloat(coverageMatch[1]));
+            this.setPackageCoverage(
+              packagePath,
+              parseFloat(coverageMatch[1]),
+              this.getCoverageTargetsForPackage(packagePath),
+            );
           }
         }
         break;
@@ -2454,6 +2625,38 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     return names;
   }
 
+  private getCoverageTargetsForPackage(
+    packagePath: string,
+  ): Set<string> | undefined {
+    const spec = this.lastRunSpec;
+    if (!spec || spec.type === "all" || spec.type === "package") {
+      return undefined;
+    }
+
+    if (spec.packagePath && spec.packagePath !== packagePath) {
+      return undefined;
+    }
+
+    if (spec.type === "test" && spec.label) {
+      return new Set([spec.label]);
+    }
+
+    if (spec.type === "file" && spec.testPattern) {
+      try {
+        const regex = new RegExp(spec.testPattern);
+        return new Set(
+          this.getDiscoveredTestsInPackage(packagePath).filter((testName) =>
+            regex.test(testName),
+          ),
+        );
+      } catch {
+        return undefined;
+      }
+    }
+
+    return undefined;
+  }
+
   private syncResultFromStatus(
     testName: string,
     packagePath: string,
@@ -2534,25 +2737,104 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
    * Get stored test output/logs for a specific test.
    */
   getTestOutput(testName: string, packagePath: string): TestOutputLog | null {
-    const resultKey = this.makeResultKey(packagePath, testName);
-    const result = this.testResults.get(resultKey);
-    return result ? result.output : null;
+    for (const candidate of this.candidateTestNames(testName)) {
+      const result = this.testResults.get(
+        this.makeResultKey(packagePath, candidate),
+      );
+      if (result) {
+        return result.output;
+      }
+    }
+    return null;
   }
 
   getTestResult(testName: string, packagePath: string): TestResult | null {
-    return (
-      this.testResults.get(this.makeResultKey(packagePath, testName)) ?? null
-    );
+    for (const candidate of this.candidateTestNames(testName)) {
+      const result = this.testResults.get(
+        this.makeResultKey(packagePath, candidate),
+      );
+      if (result) {
+        return result;
+      }
+    }
+    return null;
   }
 
   getAllTestResults(): TestResult[] {
     return [...this.testResults.values()];
   }
 
+  getTestResultsByPackage(packagePath: string): TestResult[] {
+    return [...this.testResults.values()].filter(
+      (result) => result.packagePath === packagePath,
+    );
+  }
+
+  getTestResultsByFile(filePath: string): TestResult[] {
+    return [...this.testResults.values()].filter(
+      (result) => result.file === filePath,
+    );
+  }
+
+  getTestResultsByModule(moduleRoot: string): TestResult[] {
+    const module = this.modules.find(
+      (candidate) => candidate.moduleRoot === moduleRoot,
+    );
+    if (!module) {
+      return [];
+    }
+
+    const packagePaths = new Set(module.packages.map((pkg) => pkg.packagePath));
+    return [...this.testResults.values()].filter((result) =>
+      packagePaths.has(result.packagePath),
+    );
+  }
+
+  private matchesCoverageTarget(
+    test: TestInfo,
+    targetTests: Set<string>,
+    includeSubTests: boolean,
+  ): boolean {
+    const normalize = (value: string): string =>
+      value.replace(/ /g, "_").trim();
+    const testName = normalize(test.name);
+    const subNames = (test.subTests ?? []).map((sub) =>
+      normalize(sub.fullName),
+    );
+
+    for (const target of targetTests) {
+      const targetName = normalize(target);
+      if (
+        targetName === testName ||
+        targetName.startsWith(`${testName}/`) ||
+        testName.startsWith(`${targetName}/`)
+      ) {
+        return true;
+      }
+      if (includeSubTests) {
+        for (const subName of subNames) {
+          if (
+            targetName === subName ||
+            targetName.startsWith(`${subName}/`) ||
+            subName.startsWith(`${targetName}/`)
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
   /**
    * Set coverage percentage for a package.
    */
-  setPackageCoverage(packagePath: string, coverage: number): void {
+  setPackageCoverage(
+    packagePath: string,
+    coverage: number,
+    targetTests?: Set<string>,
+  ): void {
     this.packageCoverage.set(packagePath, coverage);
     for (const mod of this.modules) {
       for (const pkg of mod.packages) {
@@ -2562,10 +2844,28 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
         pkg.coverage = coverage;
         for (const file of pkg.files) {
           for (const test of file.tests) {
-            test.packageCoverage = coverage;
+            const applyToTest =
+              !targetTests ||
+              this.matchesCoverageTarget(test, targetTests, true);
+
+            if (applyToTest) {
+              test.packageCoverage = coverage;
+            }
             if (test.subTests) {
               for (const sub of test.subTests) {
-                sub.packageCoverage = coverage;
+                const applyToSub =
+                  !targetTests ||
+                  this.matchesCoverageTarget(
+                    {
+                      ...test,
+                      subTests: [sub],
+                    },
+                    targetTests,
+                    true,
+                  );
+                if (applyToSub) {
+                  sub.packageCoverage = coverage;
+                }
               }
             }
           }
@@ -2574,7 +2874,11 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     }
   }
 
-  setFileCoverage(filePath: string, coverage: number): void {
+  setFileCoverage(
+    filePath: string,
+    coverage: number,
+    targetTests?: Set<string>,
+  ): void {
     this.fileCoverage.set(filePath, coverage);
     for (const mod of this.modules) {
       for (const pkg of mod.packages) {
@@ -2584,10 +2888,28 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
           }
           file.coverage = coverage;
           for (const test of file.tests) {
-            test.fileCoverage = coverage;
+            const applyToTest =
+              !targetTests ||
+              this.matchesCoverageTarget(test, targetTests, true);
+
+            if (applyToTest) {
+              test.fileCoverage = coverage;
+            }
             if (test.subTests) {
               for (const sub of test.subTests) {
-                sub.fileCoverage = coverage;
+                const applyToSub =
+                  !targetTests ||
+                  this.matchesCoverageTarget(
+                    {
+                      ...test,
+                      subTests: [sub],
+                    },
+                    targetTests,
+                    true,
+                  );
+                if (applyToSub) {
+                  sub.fileCoverage = coverage;
+                }
               }
             }
           }
@@ -2612,9 +2934,14 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
    */
   clearTestResults(): void {
     this.testResults.clear();
-    this.packageCoverage.clear();
-    this.fileCoverage.clear();
+    this.clearCoverageState();
     this.runningTestsByPackage.clear();
+    this.refresh();
+  }
+
+  clearCoverageData(): void {
+    this.clearCoverageState();
+    this.refresh();
   }
 
   appendRunnerOutput(output: string, packagePath?: string): void {

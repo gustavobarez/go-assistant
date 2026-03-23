@@ -2,6 +2,29 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.2.8] - 2026-03-20
+
+### Adicionado
+
+#### 📦 External Dependencies
+
+- **Seções na árvore**: `Go Modules` e `Go <version> SDK` dentro da view `External Dependencies`
+- **Navegação recursiva**: expansão de pastas/arquivos das dependências e do SDK com ícones respeitando o tema de arquivos do usuário
+- **Módulos diretos e indiretos**: classificação baseada no `go.mod` para exibição no nó da dependência
+
+### Alterado
+
+#### 📦 External Dependencies
+
+- **Resolução do `go.mod`**: prioriza `go.mod` do workspace para evitar carregar contexto de módulos externos (cache/SDK)
+- **Expansão de dependências mais rápida**: usa diretório local da dependência como caminho principal e usa `go list` apenas como fallback
+
+### Removido
+
+#### 📦 External Dependencies
+
+- **Logs de debug no output**: removidos os logs técnicos do canal de saída da árvore de dependências
+
 ## [0.2.4] - 2026-03-19
 
 ### Alterado

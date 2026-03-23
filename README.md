@@ -61,29 +61,29 @@ Cursor on a specific field: **Add json tag to 'fieldName'** or **Remove all tags
 
 ### 🔧 Signature & Declarations
 
-| Action | Trigger |
-|---|---|
-| **Move parameter up / down** | Cursor on a parameter in a `func` signature |
-| **Rename parameter** | Cursor on a parameter name |
-| **Convert to short var declaration** (`var x = y` → `x := y`) | Cursor on a `var` declaration |
-| **Convert to var declaration** (`x := y` → `var x = y`) | Cursor on a `:=` line |
-| **Convert assignment to short var** (`x = y` → `x := y`) | Cursor on a bare `=` assignment |
-| **Convert defer to multiline** | Cursor on a `defer fn(args)` line |
-| **Add channel receive result** | Cursor on a bare `<-ch` statement |
-| **Remove redundant parentheses** | Text `(expr)` selected |
-| **Add explicit type** | Cursor on a `var`/`const` without type |
-| **Split field declarations** | Cursor on `x, y Type` inside a struct |
+| Action                                                        | Trigger                                     |
+| ------------------------------------------------------------- | ------------------------------------------- |
+| **Move parameter up / down**                                  | Cursor on a parameter in a `func` signature |
+| **Rename parameter**                                          | Cursor on a parameter name                  |
+| **Convert to short var declaration** (`var x = y` → `x := y`) | Cursor on a `var` declaration               |
+| **Convert to var declaration** (`x := y` → `var x = y`)       | Cursor on a `:=` line                       |
+| **Convert assignment to short var** (`x = y` → `x := y`)      | Cursor on a bare `=` assignment             |
+| **Convert defer to multiline**                                | Cursor on a `defer fn(args)` line           |
+| **Add channel receive result**                                | Cursor on a bare `<-ch` statement           |
+| **Remove redundant parentheses**                              | Text `(expr)` selected                      |
+| **Add explicit type**                                         | Cursor on a `var`/`const` without type      |
+| **Split field declarations**                                  | Cursor on `x, y Type` inside a struct       |
 
 ---
 
 ### 🏗️ Struct & Interface Generation
 
-| Action | Trigger |
-|---|---|
-| **Fill all fields of 'TypeName'** | Cursor inside a struct literal `TypeName{}` — fills every field via gopls |
-| **Generate InterfaceStub** | Cursor on an interface declaration — generates a concrete struct that implements it |
-| **Add method to interface and all implementations** | Cursor on an interface — propagates a new method to every implementing type |
-| **Generate getter / setter** | Cursor on a struct field — appends `GetField()` / `SetField()` methods at EOF |
+| Action                                              | Trigger                                                                             |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| **Fill all fields of 'TypeName'**                   | Cursor inside a struct literal `TypeName{}` — fills every field via gopls           |
+| **Generate InterfaceStub**                          | Cursor on an interface declaration — generates a concrete struct that implements it |
+| **Add method to interface and all implementations** | Cursor on an interface — propagates a new method to every implementing type         |
+| **Generate getter / setter**                        | Cursor on a struct field — appends `GetField()` / `SetField()` methods at EOF       |
 
 ---
 
@@ -114,6 +114,7 @@ Move to another file or package via the Code Lens above each declaration (see [C
 A dedicated sidebar panel (**Go Assistant** activity bar icon) with a full test runner.
 
 ### What it shows
+
 - Full module → package → file → test → sub-test tree, auto-discovered on workspace open
 - Pass ✅ / Fail ❌ / Running 🔄 status with execution time per test
 - Run history with per-test results from previous runs
@@ -123,31 +124,31 @@ A dedicated sidebar panel (**Go Assistant** activity bar icon) with a full test 
 
 Every node in the tree has its own run and debug buttons:
 
-| Scope | Actions available |
-|---|---|
-| **All tests** in workspace | Run · Debug · Re-run last |
-| **Module** | Run module tests |
-| **Package** | Run · Debug |
-| **File** | Run · Debug |
-| **Test function** | Run · Debug |
+| Scope                       | Actions available               |
+| --------------------------- | ------------------------------- |
+| **All tests** in workspace  | Run · Debug · Re-run last       |
+| **Module**                  | Run module tests                |
+| **Package**                 | Run · Debug                     |
+| **File**                    | Run · Debug                     |
+| **Test function**           | Run · Debug                     |
 | **Sub-test** (`t.Run(...)`) | Run · Debug individual sub-test |
 
 ### Customizable test flags
 
 Press the **Configure flags** button (⚙️) to toggle per session:
 
-| Flag | Default | Description |
-|---|---|---|
-| `-v` | ✅ on | Verbose output |
-| `-fullpath` | ✅ on | Full file paths in output |
-| `-timeout 30s` | ✅ on | Configurable duration |
-| `-coverprofile` | ✅ on | Covered lines highlighted |
-| `-count=1` | off | Disable result caching |
-| `-race` | off | Race detector |
-| `-parallel N` | off | Max parallel tests |
-| `-bench=.` | off | Also run benchmarks |
-| `-run <regex>` | off | Filter tests by name |
-| `-coverpkg ./...` | off | Coverage scope |
+| Flag              | Default | Description               |
+| ----------------- | ------- | ------------------------- |
+| `-v`              | ✅ on   | Verbose output            |
+| `-fullpath`       | ✅ on   | Full file paths in output |
+| `-timeout 30s`    | ✅ on   | Configurable duration     |
+| `-coverprofile`   | ✅ on   | Covered lines highlighted |
+| `-count=1`        | off     | Disable result caching    |
+| `-race`           | off     | Race detector             |
+| `-parallel N`     | off     | Max parallel tests        |
+| `-bench=.`        | off     | Also run benchmarks       |
+| `-run <regex>`    | off     | Filter tests by name      |
+| `-coverpkg ./...` | off     | Coverage scope            |
 
 ### Coverage
 
@@ -164,33 +165,33 @@ Toggle CPU, Memory, Blocking, or Mutex profiling per test run directly from the 
 
 Inline lenses above each declaration (all individually toggleable):
 
-| Lens | Shown on |
-|---|---|
-| `N references` | Structs, interfaces, functions, methods |
-| `N implementers` | Interfaces |
-| `N implementations` | Methods (which interface methods they satisfy) |
-| `Implement interface` | Structs |
-| `N methods` | Structs (receiver methods count) |
-| `N imports` | `package` declaration |
-| `▶ Run` / `⬛ Debug` | `func main()` and `func TestXxx()` |
-| `Move to file…` | Structs and interfaces |
+| Lens                  | Shown on                                       |
+| --------------------- | ---------------------------------------------- |
+| `N references`        | Structs, interfaces, functions, methods        |
+| `N implementers`      | Interfaces                                     |
+| `N implementations`   | Methods (which interface methods they satisfy) |
+| `Implement interface` | Structs                                        |
+| `N methods`           | Structs (receiver methods count)               |
+| `N imports`           | `package` declaration                          |
+| `▶ Run` / `⬛ Debug`  | `func main()` and `func TestXxx()`             |
+| `Move to file…`       | Structs and interfaces                         |
 
 ---
 
 ## ⚙️ Settings
 
-| Setting | Default | Description |
-|---|---|---|
-| `goAssistant.codeActions.enable` | `true` | Enable / disable all code actions |
-| `goAssistant.codeActions.tagNamingCase` | `"camelCase"` | Tag name casing: `camelCase` or `snakeCase` |
-| `goAssistant.codelens.enable` | `true` | Enable / disable all code lenses |
-| `goAssistant.codelens.references` | `true` | Show reference counts |
-| `goAssistant.codelens.methods` | `true` | Show receiver method counts |
-| `goAssistant.codelens.implementers` | `true` | Show implementers for interfaces |
-| `goAssistant.codelens.implementations` | `true` | Show interface implementations for methods |
-| `goAssistant.codelens.runDebug` | `true` | Show Run/Debug lenses on `main` and tests |
-| `goAssistant.codelens.largeProject` | `false` | Cache references (recommended for large codebases) |
-| `goAssistant.coverageDecorator` | `true` | Highlight covered/uncovered lines after test runs |
+| Setting                                 | Default       | Description                                        |
+| --------------------------------------- | ------------- | -------------------------------------------------- |
+| `goAssistant.codeActions.enable`        | `true`        | Enable / disable all code actions                  |
+| `goAssistant.codeActions.tagNamingCase` | `"camelCase"` | Tag name casing: `camelCase` or `snakeCase`        |
+| `goAssistant.codelens.enable`           | `true`        | Enable / disable all code lenses                   |
+| `goAssistant.codelens.references`       | `true`        | Show reference counts                              |
+| `goAssistant.codelens.methods`          | `true`        | Show receiver method counts                        |
+| `goAssistant.codelens.implementers`     | `true`        | Show implementers for interfaces                   |
+| `goAssistant.codelens.implementations`  | `true`        | Show interface implementations for methods         |
+| `goAssistant.codelens.runDebug`         | `true`        | Show Run/Debug lenses on `main` and tests          |
+| `goAssistant.codelens.largeProject`     | `false`       | Cache references (recommended for large codebases) |
+| `goAssistant.coverageDecorator`         | `true`        | Highlight covered/uncovered lines after test runs  |
 
 ---
 
@@ -208,3 +209,18 @@ Inline lenses above each declaration (all individually toggleable):
 4. Click **Install**
 
 Or [install directly from the marketplace](https://marketplace.visualstudio.com/items?itemName=GustavoBarez.go-assistant).
+
+## 🚀 Publicação automática no VS Code Marketplace
+
+Este repositório possui workflow em `.github/workflows/publish-vscode-extension.yml` que:
+
+1. Roda a esteira de validação (`pnpm install` + `pnpm run compile`) em push para `master`
+2. Publica no Marketplace **somente se a versão em `package.json` mudou**
+
+### Pré-requisitos
+
+1. Criar um PAT no Azure DevOps para o publisher da extensão com escopo de **Marketplace > Manage**
+2. No GitHub, salvar este token em **Settings > Secrets and variables > Actions** com o nome:
+   - `VSCE_PAT`
+
+Com isso, o upload manual do `.vsix` deixa de ser necessário: ao subir commit com nova versão e a esteira passar, a publicação é feita automaticamente.

@@ -1,0 +1,110 @@
+name: Publish VS Code Extension
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and quality checks
+        run: pnpm run compile
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Check if extension version changed
+        id: version
+        shell: bash
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          PREVIOUS_VERSION=""
+
+          if git cat-file -e "${{ github.event.before }}:package.json" 2>/dev/null; then
+            PREVIOUS_VERSION=$(git show "${{ github.event.before }}:package.json" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          fi
+
+          echo "current=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "previous=$PREVIOUS_VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$PREVIOUS_VERSION" ] || [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed: '${PREVIOUS_VERSION:-none}' -> '$CURRENT_VERSION'"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Version did not change ($CURRENT_VERSION). Skipping publish."
+          fi
+
+      - name: Stop when version did not change
+        if: steps.version.outputs.publish != 'true'
+        run: echo "No version bump in package.json; publish skipped."
+
+      - name: Fail if VSCE_PAT is missing
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "Secret VSCE_PAT is not configured."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: steps.version.outputs.publish == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Compile extension
+        if: steps.version.outputs.publish == 'true'
+        run: pnpm run compile
+
+      - name: Package extension
+        if: steps.version.outputs.publish == 'true'
+        run: npx @vscode/vsce package --out go-assistant-${{ steps.version.outputs.current }}.vsix
+
+      - name: Publish to VS Code Marketplace
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx @vscode/vsce publish --packagePath go-assistant-${{ steps.version.outputs.current }}.vsix -p "$VSCE_PAT"

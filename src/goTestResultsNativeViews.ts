@@ -7,6 +7,10 @@ export interface ResultSelectionRequest {
   testName: string;
   packagePath: string;
   runId?: string;
+  scope?: "test" | "file" | "package" | "module";
+  filePath?: string;
+  moduleRoot?: string;
+  label?: string;
 }
 
 interface ResultLeafPayload {

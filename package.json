@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.2.4",
+  "version": "0.3.0",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -20,7 +20,11 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:go"
+    "onLanguage:go",
+    "onLanguage:go.mod",
+    "onView:goAssistantTests",
+    "onView:goAssistantTestsLog",
+    "onView:goAssistantDependencies"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -218,6 +222,28 @@
       {
         "command": "go-assistant.implementInterface",
         "title": "Go Assistant: Implement Interface"
+      },
+      {
+        "command": "go-assistant.goModWhyDependency",
+        "title": "Go Assistant: Go Mod Why Dependency"
+      },
+      {
+        "command": "go-assistant.goModUpdateDependency",
+        "title": "Go Assistant: Update Go Dependency"
+      },
+      {
+        "command": "go-assistant.refreshDependenciesView",
+        "title": "Refresh Dependencies",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "go-assistant.searchDependencies",
+        "title": "Search Dependencies",
+        "icon": "$(search)"
+      },
+      {
+        "command": "go-assistant.openDependencyFile",
+        "title": "Open Dependency File"
       }
     ],
     "views": {
@@ -236,6 +262,12 @@
         {
           "id": "goAssistantTestsLog",
           "name": "Log"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "goAssistantDependencies",
+          "name": "External Dependencies"
         }
       ]
     },
@@ -314,6 +346,16 @@
           "command": "go-assistant.clearTestsSearch",
           "when": "view == goAssistantTests && goAssistant.testsSearchActive",
           "group": "navigation@9"
+        },
+        {
+          "command": "go-assistant.refreshDependenciesView",
+          "when": "view == goAssistantDependencies",
+          "group": "navigation@1"
+        },
+        {
+          "command": "go-assistant.searchDependencies",
+          "when": "view == goAssistantDependencies",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -328,6 +370,11 @@
           "group": "inline@2"
         },
         {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == package",
+          "group": "inline@3"
+        },
+        {
           "command": "go-assistant.runFileTests",
           "when": "view == goAssistantTests && viewItem == file",
           "group": "inline@1"
@@ -338,23 +385,28 @@
           "group": "inline@2"
         },
         {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == file",
+          "group": "inline@3"
+        },
+        {
           "command": "go-assistant.runTest",
-          "when": "view == goAssistantTests && viewItem == test",
+          "when": "view == goAssistantTests && (viewItem == test || viewItem == testHasLog)",
           "group": "inline@1"
         },
         {
           "command": "go-assistant.debugTest",
-          "when": "view == goAssistantTests && viewItem == test",
+          "when": "view == goAssistantTests && (viewItem == test || viewItem == testHasLog)",
           "group": "inline@2"
         },
         {
           "command": "go-assistant.openTestLog",
-          "when": "view == goAssistantTests && viewItem == test",
+          "when": "view == goAssistantTests && viewItem == testHasLog",
           "group": "inline@3"
         },
         {
           "command": "go-assistant.goToTest",
-          "when": "view == goAssistantTests && viewItem == test",
+          "when": "view == goAssistantTests && (viewItem == test || viewItem == testHasLog)",
           "group": "inline@4"
         },
         {
@@ -373,43 +425,68 @@
           "group": "inline@3"
         },
         {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == historyModule",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == historyPackage",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == historyFile",
+          "group": "inline@1"
+        },
+        {
           "command": "go-assistant.runModuleTests",
           "when": "view == goAssistantTests && viewItem == module",
           "group": "inline@1"
         },
         {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == module",
+          "group": "inline@2"
+        },
+        {
           "command": "go-assistant.runSubTest",
-          "when": "view == goAssistantTests && viewItem == subtest",
+          "when": "view == goAssistantTests && (viewItem == subtest || viewItem == subtestHasLog)",
           "group": "inline@1"
         },
         {
           "command": "go-assistant.debugSubTest",
-          "when": "view == goAssistantTests && viewItem == subtest",
-          "group": "inline@2"
-        },
-        {
-          "command": "go-assistant.goToTest",
-          "when": "view == goAssistantTests && viewItem == subtest",
-          "group": "inline@3"
-        },
-        {
-          "command": "go-assistant.runTest",
-          "when": "view == goAssistantTests && viewItem == testWithSubs",
-          "group": "inline@1"
-        },
-        {
-          "command": "go-assistant.debugTest",
-          "when": "view == goAssistantTests && viewItem == testWithSubs",
+          "when": "view == goAssistantTests && (viewItem == subtest || viewItem == subtestHasLog)",
           "group": "inline@2"
         },
         {
           "command": "go-assistant.openTestLog",
-          "when": "view == goAssistantTests && viewItem == testWithSubs",
+          "when": "view == goAssistantTests && viewItem == subtestHasLog",
           "group": "inline@3"
         },
         {
           "command": "go-assistant.goToTest",
-          "when": "view == goAssistantTests && viewItem == testWithSubs",
+          "when": "view == goAssistantTests && (viewItem == subtest || viewItem == subtestHasLog)",
+          "group": "inline@4"
+        },
+        {
+          "command": "go-assistant.runTest",
+          "when": "view == goAssistantTests && (viewItem == testWithSubs || viewItem == testWithSubsHasLog)",
+          "group": "inline@1"
+        },
+        {
+          "command": "go-assistant.debugTest",
+          "when": "view == goAssistantTests && (viewItem == testWithSubs || viewItem == testWithSubsHasLog)",
+          "group": "inline@2"
+        },
+        {
+          "command": "go-assistant.openTestLog",
+          "when": "view == goAssistantTests && viewItem == testWithSubsHasLog",
+          "group": "inline@3"
+        },
+        {
+          "command": "go-assistant.goToTest",
+          "when": "view == goAssistantTests && (viewItem == testWithSubs || viewItem == testWithSubsHasLog)",
           "group": "inline@4"
         },
         {
