@@ -20,8 +20,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -46,8 +44,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -55,31 +51,37 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Check if extension version changed
+      - name: Check version against Marketplace
         id: version
         shell: bash
         run: |
+          PUBLISHER=$(node -p "require('./package.json').publisher")
+          NAME=$(node -p "require('./package.json').name")
+          EXTENSION_ID="$PUBLISHER.$NAME"
           CURRENT_VERSION=$(node -p "require('./package.json').version")
-          PREVIOUS_VERSION=""
+          MARKETPLACE_VERSION=$(npx @vscode/vsce show "$EXTENSION_ID" --json | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s);const v=(j.versions&&j.versions[0]&&j.versions[0].version)||j.version||'';process.stdout.write(v);}catch{process.stdout.write('')}})")
 
-          if git cat-file -e "${{ github.event.before }}:package.json" 2>/dev/null; then
-            PREVIOUS_VERSION=$(git show "${{ github.event.before }}:package.json" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
-          fi
+          SHOULD_PUBLISH=$(CURRENT_VERSION="$CURRENT_VERSION" MARKETPLACE_VERSION="$MARKETPLACE_VERSION" node -e "const cur=process.env.CURRENT_VERSION||'';const mp=process.env.MARKETPLACE_VERSION||'';const parse=v=>{const m=v.match(/^(\\d+)\\.(\\d+)\\.(\\d+)(?:[-+].*)?$/);return m?[+m[1],+m[2],+m[3]]:null};if(!mp){process.stdout.write('true');process.exit(0)}const a=parse(cur),b=parse(mp);if(!a||!b){process.stdout.write(cur!==mp?'true':'false');process.exit(0)}for(let i=0;i<3;i++){if(a[i]>b[i]){process.stdout.write('true');process.exit(0)}if(a[i]<b[i]){process.stdout.write('false');process.exit(0)}}process.stdout.write('false');")
 
+          echo "extension=$EXTENSION_ID" >> "$GITHUB_OUTPUT"
           echo "current=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-          echo "previous=$PREVIOUS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "marketplace=$MARKETPLACE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish=$SHOULD_PUBLISH" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$PREVIOUS_VERSION" ] || [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "Version changed: '${PREVIOUS_VERSION:-none}' -> '$CURRENT_VERSION'"
+          if [ "$SHOULD_PUBLISH" = "true" ]; then
+            echo "Will publish $EXTENSION_ID: marketplace='${MARKETPLACE_VERSION:-none}' -> current='$CURRENT_VERSION'"
           else
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "Version did not change ($CURRENT_VERSION). Skipping publish."
+            echo "No publish needed for $EXTENSION_ID: marketplace='${MARKETPLACE_VERSION:-none}', current='$CURRENT_VERSION'"
           fi
 
-      - name: Stop when version did not change
+      - name: Fail when version is not greater than Marketplace
         if: steps.version.outputs.publish != 'true'
-        run: echo "No version bump in package.json; publish skipped."
+        run: |
+          echo "Publish skipped for ${{ steps.version.outputs.extension }}."
+          echo "Marketplace version: ${{ steps.version.outputs.marketplace }}"
+          echo "Current package.json version: ${{ steps.version.outputs.current }}"
+          echo "Set package.json version to a higher value than Marketplace before pushing."
+          exit 1
 
       - name: Fail if VSCE_PAT is missing
         if: steps.version.outputs.publish == 'true'
