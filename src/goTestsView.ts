@@ -2578,11 +2578,17 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
       };
     }
 
+    // Update status and timing, but preserve existing output logs
     result.status = status;
     result.duration = duration || 0;
     result.output.endTime = new Date();
     result.output.duration = duration;
     result.output.coverage = this.packageCoverage.get(packagePath);
+    
+    // Ensure output array exists and is preserved from captured events
+    if (!result.output.output) {
+      result.output.output = [];
+    }
 
     this.testResults.set(resultKey, result);
   }
