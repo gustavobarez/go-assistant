@@ -57,6 +57,7 @@ class LogNode extends vscode.TreeItem {
 }
 
 export class GoTestResultsLogProvider implements vscode.TreeDataProvider<LogNode> {
+  private static readonly MAX_LOG_LINE_LENGTH = 120;
   private readonly emitter = new vscode.EventEmitter<LogNode | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
 
@@ -110,7 +111,11 @@ export class GoTestResultsLogProvider implements vscode.TreeDataProvider<LogNode
   }
 
   private makeLineNodes(output: string, key: string): LogNode[] {
-    const lines = output
+    const normalizedOutput = output
+      .replace(/\\r\\n/g, "\n")
+      .replace(/\\n/g, "\n");
+
+    const lines = normalizedOutput
       .split(/\r?\n/)
       .map((line) => line.trimEnd())
       .filter((line) => line.length > 0);
@@ -125,15 +130,49 @@ export class GoTestResultsLogProvider implements vscode.TreeDataProvider<LogNode
       ];
     }
 
-    return lines.map((line, index) => {
-      const lineNode = new LogNode(
-        `results-log-line|${key}|${index}`,
-        line,
-        vscode.TreeItemCollapsibleState.None,
+    const wrappedLines = lines.flatMap((line) => this.wrapLine(line));
+
+    return wrappedLines.map(
+      (line, index) =>
+        new LogNode(
+          `results-log-line|${key}|${index}`,
+          line,
+          vscode.TreeItemCollapsibleState.None,
+        ),
+    );
+  }
+
+  private wrapLine(line: string): string[] {
+    if (line.length <= GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH) {
+      return [line];
+    }
+
+    const chunks: string[] = [];
+    let remaining = line;
+
+    while (remaining.length > GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH) {
+      const slice = remaining.slice(
+        0,
+        GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH,
       );
-      lineNode.description = `${index + 1}`;
-      return lineNode;
-    });
+      const breakAt = slice.lastIndexOf(" ");
+
+      if (breakAt > 0) {
+        chunks.push(slice.slice(0, breakAt));
+        remaining = remaining.slice(breakAt + 1);
+      } else {
+        chunks.push(slice);
+        remaining = remaining.slice(
+          GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH,
+        );
+      }
+    }
+
+    if (remaining.length > 0) {
+      chunks.push(remaining);
+    }
+
+    return chunks;
   }
 }
 
