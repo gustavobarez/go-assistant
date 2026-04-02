@@ -2990,7 +2990,7 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
     }
 
     if (extracted.length > 0) {
-      return extracted.join("");
+      return extracted.join("\n");
     }
 
     return rawOutput;

@@ -554,7 +554,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const combinedOutput = ordered
       .map((result) => {
-        const lines = result.output.output.join("").trimEnd();
+        const lines = result.output.output.join("\n").trimEnd();
         const duration = result.duration
           ? `${result.duration.toFixed(2)}s`
           : "0.00s";
@@ -790,7 +790,7 @@ export function activate(context: vscode.ExtensionContext) {
       status: result.status,
       duration: result.duration ?? 0,
       coverage: testsViewProvider.getPackageCoverage(result.packagePath),
-      output: result.output.output.join(""),
+      output: result.output.output.join("\n"),
     };
   };
 
@@ -903,7 +903,7 @@ export function activate(context: vscode.ExtensionContext) {
             ? result.status
             : "unknown",
         duration: result.duration,
-        output: result.output.output.join(""),
+        output: result.output.output.join("\n"),
         packageCoverage:
           testsViewProvider.getPackageCoverage(result.packagePath) ?? undefined,
         fileCoverage:
