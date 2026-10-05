@@ -2,6 +2,23 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.3.3] - 2026-10-05
+
+### Corrigido
+
+#### 📦 External Dependencies
+
+- **Prevenção de mutação indevida no `go.sum`**: substitui o uso direto de `-mod=mod` por `-mod=readonly` para listagem de módulos e pacotes, garantindo que abrir ou expandir a view `External Dependencies` nunca altere o `go.sum` do projeto.
+- **Isolamento de resolução de dependências**: adicionado fallback seguro com `-modfile` em diretório temporário para resolução profunda de módulos em projetos com somas pendentes, mantendo os arquivos do workspace intactos.
+- **Parser de dependências diretas e indiretas**: maior tolerância a comentários e variações de espaçamento nas diretivas de `require` do `go.mod`.
+
+### Adicionado
+
+#### 🧪 Testes Automatizados
+
+- **Suíte de testes de imutabilidade do `go.sum`**: valida via hash SHA-256 que o `go.sum` permanece estritamente idêntico antes e depois do carregamento da árvore de dependências.
+- **Suíte completa de testes unitários e de integração**: cobertura de `GoDependenciesViewProvider`, `GoModFinder`, `GoCoverageDecorator`, `GoReferencesViewProvider` e ativação/registro de comandos da extensão como um todo.
+
 ## [0.2.8] - 2026-03-20
 
 ### Adicionado

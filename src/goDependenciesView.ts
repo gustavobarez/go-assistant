@@ -1,10 +1,11 @@
 import { execFile } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { findAllGoModsInWorkspace, findGoModForWorkspace } from "./goModFinder";
 
-type GoModule = {
+export type GoModule = {
   Path: string;
   Version?: string;
   Main?: boolean;
@@ -16,7 +17,7 @@ type GoModule = {
   };
 };
 
-type ModuleDependency = {
+export type ModuleDependency = {
   modulePath: string;
   version?: string;
   directory?: string;
@@ -27,13 +28,13 @@ type ModuleDependency = {
   packagesLoadError?: string;
 };
 
-type PackageDependency = {
+export type PackageDependency = {
   modulePath: string;
   importPath: string;
   directory: string;
 };
 
-type DependencyTreeNode =
+export type DependencyTreeNode =
   | { kind: "section"; section: "modules" | "sdk"; label: string }
   | { kind: "dependency"; dependency: ModuleDependency }
   | { kind: "folder"; folderPath: string; rootPath: string }
@@ -74,6 +75,14 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
 
   getSearchQuery(): string {
     return this.searchQuery;
+  }
+
+  getDependencies(): ModuleDependency[] {
+    return this.dependencies;
+  }
+
+  getModuleRoot(): string | undefined {
+    return this.moduleRoot;
   }
 
   getTreeItem(element: DependencyTreeNode): vscode.TreeItem {
@@ -361,9 +370,38 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
     }
   }
 
+  private async withIsolatedModFile<T>(
+    moduleRoot: string,
+    action: (modFilePath: string) => Promise<T>,
+  ): Promise<T> {
+    const tempDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "go-assistant-deps-"),
+    );
+    try {
+      const srcMod = path.join(moduleRoot, "go.mod");
+      const tempMod = path.join(tempDir, "go.mod");
+      if (await this.fileExists(srcMod)) {
+        await fs.promises.copyFile(srcMod, tempMod);
+      }
+
+      const srcSum = path.join(moduleRoot, "go.sum");
+      const tempSum = path.join(tempDir, "go.sum");
+      if (await this.fileExists(srcSum)) {
+        await fs.promises.copyFile(srcSum, tempSum);
+      }
+
+      return await action(tempMod);
+    } finally {
+      try {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+
   private async listModules(moduleRoot: string): Promise<GoModule[]> {
     const attempts: string[][] = [
-      ["list", "-mod=mod", "-m", "-json", "all"],
       ["list", "-mod=readonly", "-m", "-json", "all"],
       ["list", "-m", "-json", "all"],
     ];
@@ -378,6 +416,24 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
       }
     }
 
+    // If readonly/default failed (e.g. missing checksums in go.sum),
+    // run with an isolated temporary modfile so the workspace go.sum is NEVER modified.
+    try {
+      const stdout = await this.withIsolatedModFile(moduleRoot, (tempMod) =>
+        this.execGo(moduleRoot, [
+          "list",
+          `-modfile=${tempMod}`,
+          "-mod=mod",
+          "-m",
+          "-json",
+          "all",
+        ]),
+      );
+      return parseConcatenatedJson<GoModule>(stdout);
+    } catch (error) {
+      lastError = error;
+    }
+
     throw lastError instanceof Error
       ? lastError
       : new Error("failed to list modules");
@@ -385,14 +441,6 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
 
   private async listUsedModulePaths(moduleRoot: string): Promise<Set<string>> {
     const attempts: string[][] = [
-      [
-        "list",
-        "-mod=mod",
-        "-deps",
-        "-f",
-        "{{if .Module}}{{.Module.Path}}{{end}}",
-        "./...",
-      ],
       [
         "list",
         "-mod=readonly",
@@ -411,6 +459,24 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
         break;
       } catch {
         // try next strategy
+      }
+    }
+
+    if (!stdout.trim()) {
+      try {
+        stdout = await this.withIsolatedModFile(moduleRoot, (tempMod) =>
+          this.execGo(moduleRoot, [
+            "list",
+            `-modfile=${tempMod}`,
+            "-mod=mod",
+            "-deps",
+            "-f",
+            "{{if .Module}}{{.Module.Path}}{{end}}",
+            "./...",
+          ]),
+        );
+      } catch {
+        // ignore fallback error
       }
     }
 
@@ -483,7 +549,7 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
     } catch (_error) {}
   }
 
-  private async readDependencyDirectness(
+  public async readDependencyDirectness(
     goModPath: string,
   ): Promise<Map<string, boolean>> {
     const map = new Map<string, boolean>();
@@ -512,13 +578,15 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
         const parseLine = (
           value: string,
         ): { modulePath: string; indirect: boolean } | undefined => {
-          const match = value.match(/^(\S+)\s+v\S+(?:\s+\/\/\s*indirect)?$/);
-          if (!match) {
+          const parts = value.split(/\s+/);
+          if (parts.length < 2) {
             return undefined;
           }
+          const modulePath = parts[0];
+          const indirect = /\/\/\s*indirect\b/.test(value);
           return {
-            modulePath: match[1],
-            indirect: /\/\/\s*indirect\b/.test(value),
+            modulePath,
+            indirect,
           };
         };
 
@@ -581,26 +649,44 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
       }
     };
 
-    try {
-      const withSubPackages = await this.execGo(this.moduleRoot, [
-        "list",
-        "-mod=mod",
-        "-f",
-        format,
-        `${dependency.modulePath}/...`,
-      ]);
-
-      parsePackages(withSubPackages);
-
-      if (packages.length === 0) {
-        const rootOnly = await this.execGo(this.moduleRoot, [
+    const runList = async (target: string): Promise<string> => {
+      try {
+        return await this.execGo(this.moduleRoot!, [
           "list",
-          "-mod=mod",
+          "-mod=readonly",
           "-f",
           format,
-          dependency.modulePath,
+          target,
         ]);
-        parsePackages(rootOnly);
+      } catch {
+        return await this.withIsolatedModFile(this.moduleRoot!, (tempMod) =>
+          this.execGo(this.moduleRoot!, [
+            "list",
+            `-modfile=${tempMod}`,
+            "-mod=mod",
+            "-f",
+            format,
+            target,
+          ]),
+        );
+      }
+    };
+
+    try {
+      try {
+        const withSubPackages = await runList(`${dependency.modulePath}/...`);
+        parsePackages(withSubPackages);
+      } catch {
+        // subpackages failed, try root
+      }
+
+      if (packages.length === 0) {
+        try {
+          const rootOnly = await runList(dependency.modulePath);
+          parsePackages(rootOnly);
+        } catch {
+          // root only failed too
+        }
       }
 
       dependency.packages = packages.sort((a, b) =>
@@ -616,7 +702,7 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
     }
   }
 
-  private async resolveDependencyDirectory(
+  public async resolveDependencyDirectory(
     dependency: ModuleDependency,
   ): Promise<string | undefined> {
     if (
@@ -780,7 +866,7 @@ export class GoDependenciesViewProvider implements vscode.TreeDataProvider<Depen
   }
 }
 
-function parseConcatenatedJson<T>(input: string): T[] {
+export function parseConcatenatedJson<T>(input: string): T[] {
   const results: T[] = [];
   let depth = 0;
   let inString = false;
@@ -827,7 +913,7 @@ function parseConcatenatedJson<T>(input: string): T[] {
   return results;
 }
 
-function longestCommonDirectory(pathA: string, pathB: string): string {
+export function longestCommonDirectory(pathA: string, pathB: string): string {
   const resolvedA = path.resolve(pathA).split(path.sep).filter(Boolean);
   const resolvedB = path.resolve(pathB).split(path.sep).filter(Boolean);
   const maxLength = Math.min(resolvedA.length, resolvedB.length);
@@ -848,7 +934,7 @@ function longestCommonDirectory(pathA: string, pathB: string): string {
   return path.join(root, ...shared);
 }
 
-function escapeModuleValue(value: string): string {
+export function escapeModuleValue(value: string): string {
   let escaped = "";
   for (const char of value) {
     if (char >= "A" && char <= "Z") {
