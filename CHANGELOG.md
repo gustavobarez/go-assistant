@@ -2,7 +2,7 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
-## [0.3.3] - 2026-10-05
+## [0.3.4] - 2026-10-05
 
 ### Corrigido
 
@@ -14,10 +14,17 @@ Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
 ### Adicionado
 
+#### 🧪 Testing — Terminal Log View
+
+- **Visualização de log estilo terminal**: a view `Log` agora renderiza como um terminal contínuo com suporte a seleção de texto normal (arraste com cursor e Ctrl+C), quebra de linha inteligente (Wrap toggle), scroll vertical e horizontal.
+- **Fim das linhas separadas como nós de árvore**: logs longos não são mais divididos em itens de árvore individuais, evitando cortes de tela e nós soltos.
+- **Colorização de saída do Go Test**: destaque para `=== RUN`, `--- PASS` (verde), `--- FAIL` (vermelho), `PASS`, `FAIL`, pânicos e referências a arquivos de teste.
+- **Novos comandos**: ações de `Copy Log` e `Clear Log` na barra da view e no cabeçalho do log.
+
 #### 🧪 Testes Automatizados
 
 - **Suíte de testes de imutabilidade do `go.sum`**: valida via hash SHA-256 que o `go.sum` permanece estritamente idêntico antes e depois do carregamento da árvore de dependências.
-- **Suíte completa de testes unitários e de integração**: cobertura de `GoDependenciesViewProvider`, `GoModFinder`, `GoCoverageDecorator`, `GoReferencesViewProvider` e ativação/registro de comandos da extensão como um todo.
+- **Suíte completa de testes unitários e de integração**: cobertura de `GoDependenciesViewProvider`, `GoModFinder`, `GoCoverageDecorator`, `GoReferencesViewProvider`, `GoTestResultsLogProvider` e ativação/registro de comandos da extensão como um todo.
 
 ## [0.2.8] - 2026-03-20
 

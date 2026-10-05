@@ -13,7 +13,7 @@ export interface ResultSelectionRequest {
   label?: string;
 }
 
-interface ResultLeafPayload {
+export interface ResultLeafPayload {
   key: string;
   source: ResultSource;
   testName: string;
@@ -26,7 +26,7 @@ interface ResultLeafPayload {
   runId?: string;
 }
 
-class SelectionState {
+export class SelectionState {
   private readonly emitter = new vscode.EventEmitter<void>();
   private current?: ResultLeafPayload;
 
@@ -42,137 +42,447 @@ class SelectionState {
   }
 }
 
-class LogNode extends vscode.TreeItem {
+export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = "goAssistantTestsLog";
+  private _view?: vscode.WebviewView;
+
   constructor(
-    id: string,
-    label: string,
-    collapsible: vscode.TreeItemCollapsibleState,
-    public readonly children: LogNode[] = [],
-    description?: string,
+    private readonly extensionUri: vscode.Uri,
+    private readonly selectionState: SelectionState,
   ) {
-    super(label, collapsible);
-    this.id = id;
-    this.description = description;
-  }
-}
-
-export class GoTestResultsLogProvider implements vscode.TreeDataProvider<LogNode> {
-  private static readonly MAX_LOG_LINE_LENGTH = 120;
-  private readonly emitter = new vscode.EventEmitter<LogNode | undefined>();
-  readonly onDidChangeTreeData = this.emitter.event;
-
-  constructor(private readonly selectionState: SelectionState) {
-    this.selectionState.onDidChange(() => this.emitter.fire(undefined));
+    this.selectionState.onDidChange(() => {
+      this.updateView();
+    });
   }
 
-  getTreeItem(element: LogNode): vscode.TreeItem {
-    return element;
+  public resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken,
+  ): void {
+    this._view = webviewView;
+
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this.extensionUri],
+    };
+
+    webviewView.webview.html = this.getHtmlForWebview();
+
+    webviewView.webview.onDidReceiveMessage((message) => {
+      switch (message.type) {
+        case "ready": {
+          this.updateView();
+          break;
+        }
+        case "copy": {
+          if (message.text) {
+            void vscode.env.clipboard.writeText(message.text);
+            void vscode.window.showInformationMessage(
+              "Test log copied to clipboard",
+            );
+          }
+          break;
+        }
+        case "clear": {
+          this.selectionState.set(undefined);
+          break;
+        }
+      }
+    });
+
+    this.updateView();
   }
 
-  getChildren(element?: LogNode): Thenable<LogNode[]> {
-    if (!element) {
-      const selected = this.selectionState.get();
-      if (!selected) {
-        return Promise.resolve([
-          new LogNode(
-            "results-log-empty",
-            "No test selected",
-            vscode.TreeItemCollapsibleState.None,
-            [],
-            "Select a test in Tests view",
-          ),
-        ]);
+  public show(): void {
+    if (this._view) {
+      this._view.show(true);
+    }
+  }
+
+  public getCurrentPayload(): ResultLeafPayload | undefined {
+    return this.selectionState.get();
+  }
+
+  public updateView(): void {
+    if (!this._view) {
+      return;
+    }
+
+    const payload = this.selectionState.get();
+    void this._view.webview.postMessage({
+      type: "setLog",
+      payload: payload ?? null,
+    });
+  }
+
+  private getHtmlForWebview(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Log</title>
+  <style>
+    :root {
+      --term-font: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+      --term-size: var(--vscode-editor-font-size, 12px);
+      --term-bg: var(--vscode-terminal-background, var(--vscode-editor-background, #181818));
+      --term-fg: var(--vscode-terminal-foreground, var(--vscode-editor-foreground, #cccccc));
+      --ansi-green: var(--vscode-terminal-ansiGreen, #4ec9b0);
+      --ansi-red: var(--vscode-terminal-ansiRed, #f14c4c);
+      --ansi-yellow: var(--vscode-terminal-ansiYellow, #cca700);
+      --ansi-cyan: var(--vscode-terminal-ansiCyan, #56b6c2);
+      --ansi-blue: var(--vscode-terminal-ansiBlue, #2472c8);
+      --ansi-gray: var(--vscode-descriptionForeground, #858585);
+      --border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background-color: var(--term-bg);
+      color: var(--term-fg);
+      font-family: var(--term-font);
+      font-size: var(--term-size);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    .terminal-header {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background-color: var(--vscode-editorGroupHeader-tabsBackground, rgba(0, 0, 0, 0.15));
+      border-bottom: 1px solid var(--border-color);
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: 11px;
+      flex-shrink: 0;
+      gap: 8px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    .test-title {
+      font-weight: 600;
+      color: var(--vscode-foreground);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    .badge-pass {
+      background-color: rgba(78, 201, 176, 0.2);
+      color: var(--ansi-green);
+      border: 1px solid rgba(78, 201, 176, 0.4);
+    }
+
+    .badge-fail {
+      background-color: rgba(241, 76, 76, 0.2);
+      color: var(--ansi-red);
+      border: 1px solid rgba(241, 76, 76, 0.4);
+    }
+
+    .badge-running {
+      background-color: rgba(36, 114, 200, 0.2);
+      color: var(--ansi-blue);
+      border: 1px solid rgba(36, 114, 200, 0.4);
+    }
+
+    .meta-info {
+      color: var(--ansi-gray);
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .action-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--vscode-foreground);
+      opacity: 0.85;
+      cursor: pointer;
+      padding: 3px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-family: var(--vscode-font-family, sans-serif);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+    }
+
+    .action-btn:hover {
+      opacity: 1;
+      background-color: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+    }
+
+    .action-btn.active {
+      opacity: 1;
+      background-color: var(--vscode-toolbar-activeBackground, rgba(128, 128, 128, 0.25));
+      border-color: var(--border-color);
+    }
+
+    .terminal-scroll-area {
+      flex: 1;
+      overflow: auto;
+      padding: 8px 12px;
+      font-family: var(--term-font);
+      font-size: var(--term-size);
+      line-height: 1.45;
+    }
+
+    .terminal-output {
+      margin: 0;
+      padding: 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+      tab-size: 4;
+      font-family: inherit;
+      color: var(--term-fg);
+    }
+
+    .terminal-output.nowrap {
+      white-space: pre;
+      word-break: normal;
+    }
+
+    /* Go Test Output Highlights */
+    .line-run {
+      color: var(--ansi-cyan);
+      font-weight: 600;
+    }
+
+    .line-pass {
+      color: var(--ansi-green);
+      font-weight: 600;
+    }
+
+    .line-fail {
+      color: var(--ansi-red);
+      font-weight: 600;
+    }
+
+    .line-error {
+      color: var(--ansi-red);
+    }
+
+    .line-file-loc {
+      color: var(--ansi-yellow);
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--ansi-gray);
+      text-align: center;
+      padding: 24px;
+      user-select: none;
+    }
+
+    .terminal-prompt {
+      font-family: var(--term-font);
+      font-size: 13px;
+      color: var(--ansi-green);
+      margin-bottom: 12px;
+      opacity: 0.9;
+    }
+
+    .empty-title {
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--vscode-foreground);
+    }
+
+    .empty-subtitle {
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: 11px;
+      max-width: 320px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="terminal-header" id="header">
+    <div class="header-left">
+      <span class="badge" id="statusBadge">PASS</span>
+      <span class="test-title" id="testTitle">Test</span>
+      <span class="meta-info" id="metaInfo"></span>
+    </div>
+    <div class="header-actions">
+      <button class="action-btn active" id="btnWrap" title="Toggle line wrapping">Wrap</button>
+      <button class="action-btn" id="btnCopy" title="Copy output to clipboard">Copy</button>
+      <button class="action-btn" id="btnClear" title="Clear log">Clear</button>
+    </div>
+  </div>
+
+  <div class="terminal-scroll-area" id="scrollArea">
+    <div class="empty-state" id="emptyState">
+      <div class="terminal-prompt">$ go test</div>
+      <div class="empty-title">No test output to display</div>
+      <div class="empty-subtitle">Run a test or select an item in the Tests tree on the left to inspect its terminal output.</div>
+    </div>
+    <pre class="terminal-output" id="terminalOutput" style="display: none;"></pre>
+  </div>
+
+  <script>
+    const vscode = acquireVsCodeApi();
+    const headerEl = document.getElementById('header');
+    const titleEl = document.getElementById('testTitle');
+    const badgeEl = document.getElementById('statusBadge');
+    const metaEl = document.getElementById('metaInfo');
+    const outputEl = document.getElementById('terminalOutput');
+    const scrollArea = document.getElementById('scrollArea');
+    const emptyEl = document.getElementById('emptyState');
+    const btnWrap = document.getElementById('btnWrap');
+    const btnCopy = document.getElementById('btnCopy');
+    const btnClear = document.getElementById('btnClear');
+
+    let currentRawOutput = '';
+    let isWrapped = true;
+
+    function escapeHtml(text) {
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function colorizeGoTestLine(escapedLine) {
+      if (escapedLine.startsWith('=== RUN') || escapedLine.startsWith('=== CONT')) {
+        return '<span class="line-run">' + escapedLine + '</span>';
+      }
+      if (escapedLine.startsWith('--- PASS:')) {
+        return '<span class="line-pass">' + escapedLine + '</span>';
+      }
+      if (escapedLine.startsWith('--- FAIL:')) {
+        return '<span class="line-fail">' + escapedLine + '</span>';
+      }
+      if (escapedLine === 'PASS' || escapedLine.startsWith('ok  \\t') || escapedLine.startsWith('ok\\t')) {
+        return '<span class="line-pass">' + escapedLine + '</span>';
+      }
+      if (escapedLine === 'FAIL' || escapedLine.startsWith('FAIL\\t')) {
+        return '<span class="line-fail">' + escapedLine + '</span>';
+      }
+      if (/^\\s*([a-zA-Z0-9_\\-\\.\\/]+_test\\.go:\\d+:)/.test(escapedLine)) {
+        return escapedLine.replace(/^(\\s*)([a-zA-Z0-9_\\-\\.\\/]+_test\\.go:\\d+:)/, '$1<span class="line-file-loc">$2</span>');
+      }
+      if (escapedLine.includes('panic:') || escapedLine.includes('FAIL:')) {
+        return '<span class="line-error">' + escapedLine + '</span>';
+      }
+      return escapedLine;
+    }
+
+    function renderLog(payload) {
+      if (!payload || !payload.output) {
+        headerEl.style.display = 'none';
+        outputEl.style.display = 'none';
+        outputEl.innerHTML = '';
+        emptyEl.style.display = 'flex';
+        currentRawOutput = '';
+        return;
       }
 
-      return Promise.resolve(this.makeConsoleNodes(selected));
+      emptyEl.style.display = 'none';
+      outputEl.style.display = 'block';
+      headerEl.style.display = 'flex';
+
+      titleEl.textContent = payload.testName;
+      titleEl.title = payload.testName;
+
+      const status = (payload.status || 'unknown').toLowerCase();
+      badgeEl.className = 'badge ' + (status === 'pass' ? 'badge-pass' : status === 'fail' ? 'badge-fail' : 'badge-running');
+      badgeEl.textContent = status.toUpperCase();
+
+      const durationStr = typeof payload.duration === 'number' && Number.isFinite(payload.duration)
+        ? payload.duration.toFixed(2) + 's'
+        : '';
+      const coverageStr = payload.coverage !== null && payload.coverage !== undefined
+        ? payload.coverage.toFixed(1) + '%'
+        : '';
+
+      const metaParts = [durationStr, coverageStr].filter(Boolean);
+      metaEl.textContent = metaParts.length > 0 ? metaParts.join(' · ') : '';
+
+      currentRawOutput = payload.output;
+
+      const rawLines = payload.output
+        .replace(/\\r\\n/g, '\\n')
+        .replace(/\\n/g, '\\n')
+        .split(/\\r?\\n/);
+
+      const formattedLines = rawLines.map(line => colorizeGoTestLine(escapeHtml(line)));
+      outputEl.innerHTML = formattedLines.join('\\n');
+
+      scrollArea.scrollTop = scrollArea.scrollHeight;
     }
 
-    return Promise.resolve(element.children);
-  }
+    btnWrap.addEventListener('click', () => {
+      isWrapped = !isWrapped;
+      outputEl.classList.toggle('nowrap', !isWrapped);
+      btnWrap.classList.toggle('active', isWrapped);
+    });
 
-  private makeConsoleNodes(selected: ResultLeafPayload): LogNode[] {
-    const duration = Number.isFinite(selected.duration)
-      ? `${selected.duration.toFixed(2)}s`
-      : "0.00s";
-    const coverage =
-      selected.coverage !== null && selected.coverage !== undefined
-        ? `${selected.coverage.toFixed(1)}%`
-        : "n/a";
+    btnCopy.addEventListener('click', () => {
+      if (!currentRawOutput) return;
+      vscode.postMessage({ type: 'copy', text: currentRawOutput });
+    });
 
-    const header = new LogNode(
-      `results-log-header|${selected.key}`,
-      `${selected.testName} (${duration}, ${coverage})`,
-      vscode.TreeItemCollapsibleState.None,
-    );
-    header.iconPath = new vscode.ThemeIcon("terminal");
+    btnClear.addEventListener('click', () => {
+      vscode.postMessage({ type: 'clear' });
+    });
 
-    const lines = this.makeLineNodes(selected.output, selected.key);
-    return [header, ...lines];
-  }
-
-  private makeLineNodes(output: string, key: string): LogNode[] {
-    const normalizedOutput = output
-      .replace(/\\r\\n/g, "\n")
-      .replace(/\\n/g, "\n");
-
-    const lines = normalizedOutput
-      .split(/\r?\n/)
-      .map((line) => line.trimEnd())
-      .filter((line) => line.length > 0);
-
-    if (lines.length === 0) {
-      return [
-        new LogNode(
-          `results-log-line|${key}|0`,
-          "(no output)",
-          vscode.TreeItemCollapsibleState.None,
-        ),
-      ];
-    }
-
-    const wrappedLines = lines.flatMap((line) => this.wrapLine(line));
-
-    return wrappedLines.map(
-      (line, index) =>
-        new LogNode(
-          `results-log-line|${key}|${index}`,
-          line,
-          vscode.TreeItemCollapsibleState.None,
-        ),
-    );
-  }
-
-  private wrapLine(line: string): string[] {
-    if (line.length <= GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH) {
-      return [line];
-    }
-
-    const chunks: string[] = [];
-    let remaining = line;
-
-    while (remaining.length > GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH) {
-      const slice = remaining.slice(
-        0,
-        GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH,
-      );
-      const breakAt = slice.lastIndexOf(" ");
-
-      if (breakAt > 0) {
-        chunks.push(slice.slice(0, breakAt));
-        remaining = remaining.slice(breakAt + 1);
-      } else {
-        chunks.push(slice);
-        remaining = remaining.slice(
-          GoTestResultsLogProvider.MAX_LOG_LINE_LENGTH,
-        );
+    window.addEventListener('message', event => {
+      if (event.data?.type === 'setLog') {
+        renderLog(event.data.payload);
       }
-    }
+    });
 
-    if (remaining.length > 0) {
-      chunks.push(remaining);
-    }
-
-    return chunks;
+    vscode.postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>`;
   }
 }
 

@@ -502,17 +502,21 @@ export function activate(context: vscode.ExtensionContext) {
 
   const resultsSelectionState = createResultsState();
   const testResultsLogProvider = new GoTestResultsLogProvider(
+    context.extensionUri,
     resultsSelectionState,
   );
 
-  const testResultsLogView = vscode.window.createTreeView(
-    "goAssistantTestsLog",
-    {
-      treeDataProvider: testResultsLogProvider,
-      showCollapseAll: false,
-    },
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      "goAssistantTestsLog",
+      testResultsLogProvider,
+      {
+        webviewOptions: {
+          retainContextWhenHidden: true,
+        },
+      },
+    ),
   );
-  testResultsLogView.title = "Log";
 
   const dependenciesViewProvider = new GoDependenciesViewProvider();
   let dependenciesView: vscode.TreeView<any> | undefined;
@@ -821,6 +825,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     await vscode.commands.executeCommand("goAssistantTestsLog.focus");
+    testResultsLogProvider.show();
   };
 
   const buildHistoryEntries = (options?: {
@@ -912,7 +917,6 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   context.subscriptions.push(testsView);
-  context.subscriptions.push(testResultsLogView);
   if (dependenciesView) {
     context.subscriptions.push(dependenciesView);
   }
@@ -3855,6 +3859,26 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     },
   );
 
+  const copyTestLogCommand = vscode.commands.registerCommand(
+    "go-assistant.copyTestLog",
+    async () => {
+      const selected = resultsSelectionState.get();
+      if (!selected?.output) {
+        vscode.window.showInformationMessage("No test output to copy.");
+        return;
+      }
+      await vscode.env.clipboard.writeText(selected.output);
+      vscode.window.showInformationMessage("Test log copied to clipboard.");
+    },
+  );
+
+  const clearTestLogCommand = vscode.commands.registerCommand(
+    "go-assistant.clearTestLog",
+    () => {
+      resultsSelectionState.set(undefined);
+    },
+  );
+
   const openDependencyFileCommand = vscode.commands.registerCommand(
     "go-assistant.openDependencyFile",
     async (filePath: string) => {
@@ -4278,6 +4302,8 @@ ${methods.map((m) => `func (s *${stubName}) ${m} {\n\tpanic("TODO: implement")\n
     refreshDependenciesViewCommand,
     searchDependenciesCommand,
     openDependencyFileCommand,
+    copyTestLogCommand,
+    clearTestLogCommand,
     goModWhyDependencyCommand,
     goModUpdateDependencyCommand,
     runTestWithOptionsCommand,

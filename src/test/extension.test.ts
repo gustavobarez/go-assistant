@@ -35,6 +35,8 @@ suite("Go Assistant Extension Integration Suite", () => {
       "go-assistant.goModWhyDependency",
       "go-assistant.goModUpdateDependency",
       "go-assistant.clearCoverage",
+      "go-assistant.copyTestLog",
+      "go-assistant.clearTestLog",
     ];
 
     for (const cmd of expectedCommands) {
@@ -53,6 +55,10 @@ suite("Go Assistant Extension Integration Suite", () => {
 
   test("Happy case: clearCoverage executes without error", async () => {
     await vscode.commands.executeCommand("go-assistant.clearCoverage");
+  });
+
+  test("Happy case: clearTestLog executes without error", async () => {
+    await vscode.commands.executeCommand("go-assistant.clearTestLog");
   });
 
   test("Happy case: clearReferencesView executes without error", async () => {

@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/gustavobarez/go-assistant"
   },
-  "version": "0.3.3",
+  "version": "0.3.4",
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -244,6 +244,16 @@
       {
         "command": "go-assistant.openDependencyFile",
         "title": "Open Dependency File"
+      },
+      {
+        "command": "go-assistant.copyTestLog",
+        "title": "Copy Log",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "go-assistant.clearTestLog",
+        "title": "Clear Log",
+        "icon": "$(clear-all)"
       }
     ],
     "views": {
@@ -260,6 +270,7 @@
           "name": "Tests"
         },
         {
+          "type": "webview",
           "id": "goAssistantTestsLog",
           "name": "Log"
         }
@@ -355,6 +366,16 @@
         {
           "command": "go-assistant.searchDependencies",
           "when": "view == goAssistantDependencies",
+          "group": "navigation@2"
+        },
+        {
+          "command": "go-assistant.copyTestLog",
+          "when": "view == goAssistantTestsLog",
+          "group": "navigation@1"
+        },
+        {
+          "command": "go-assistant.clearTestLog",
+          "when": "view == goAssistantTestsLog",
           "group": "navigation@2"
         }
       ],
