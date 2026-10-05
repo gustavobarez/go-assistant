@@ -2,6 +2,18 @@
 
 Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 
+## [0.3.5] - 2026-10-05
+
+### Corrigido
+
+#### 🧪 Testing — Terminal Log View
+
+- **Log em branco**: a webview agora usa CSP com `nonce` e renderiza o log selecionado já no HTML inicial, sem depender só de `postMessage`.
+- **Seleção na árvore**: clicar em um teste, arquivo, pacote ou módulo em `Tests` atualiza o log imediatamente.
+- **Status `UNKNOWN`**: saídas finais do `go test` (`PASS`, `ok`, `coverage`) não resetam mais um resultado já `pass`/`fail`.
+- **Linhas em branco duplicadas**: o log não duplica mais as quebras de linha da saída do `go test -json`.
+- **Busca de resultado**: `getTestResult` faz fallback por nome de teste em qualquer pacote.
+
 ## [0.3.4] - 2026-10-05
 
 ### Corrigido

@@ -131,6 +131,16 @@ function sendCmd(terminal: vscode.Terminal, dir: string, cmd: string): void {
 }
 
 /**
+ * Join captured go test output chunks. Chunks from `go test -json` already
+ * end with a newline, so only add one when it is missing.
+ */
+function joinOutputChunks(chunks: string[]): string {
+  return chunks
+    .map((chunk) => (chunk.endsWith("\n") ? chunk : `${chunk}\n`))
+    .join("");
+}
+
+/**
  * Execute tests with -json flag and parse output in real-time.
  * Calls processEvent for each JSON event without showing terminal.
  */
@@ -558,7 +568,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const combinedOutput = ordered
       .map((result) => {
-        const lines = result.output.output.join("\n").trimEnd();
+        const lines = joinOutputChunks(result.output.output).trimEnd();
         const duration = result.duration
           ? `${result.duration.toFixed(2)}s`
           : "0.00s";
@@ -794,8 +804,123 @@ export function activate(context: vscode.ExtensionContext) {
       status: result.status,
       duration: result.duration ?? 0,
       coverage: testsViewProvider.getPackageCoverage(result.packagePath),
-      output: result.output.output.join("\n"),
+      output:
+        result.output.output.length > 0
+          ? joinOutputChunks(result.output.output)
+          : `=== RUN   ${result.testName}\n--- ${result.status.toUpperCase()}: ${result.testName} (${(result.duration ?? 0).toFixed(2)}s)\n`,
     };
+  };
+
+  const buildSelectionRequestFromItem = (
+    item: any,
+  ): ResultSelectionRequest | undefined => {
+    if (!item) {
+      return undefined;
+    }
+    if (
+      item.itemType === "historyModule" &&
+      item.historyRun &&
+      item.historyModuleRoot
+    ) {
+      return {
+        source: "history",
+        scope: "module",
+        label: item.label,
+        moduleRoot: item.historyModuleRoot,
+        testName: item.label,
+        packagePath: item.historyModuleRoot,
+        runId: item.historyRun.id,
+      };
+    }
+    if (
+      item.itemType === "historyPackage" &&
+      item.historyRun &&
+      item.historyPackagePath
+    ) {
+      return {
+        source: "history",
+        scope: "package",
+        label: item.label,
+        testName: item.label,
+        packagePath: item.historyPackagePath,
+        runId: item.historyRun.id,
+      };
+    }
+    if (
+      item.itemType === "historyFile" &&
+      item.historyRun &&
+      item.historyPackagePath &&
+      item.historyFilePath
+    ) {
+      return {
+        source: "history",
+        scope: "file",
+        label: item.label,
+        filePath: item.historyFilePath,
+        testName: item.label,
+        packagePath: item.historyPackagePath,
+        runId: item.historyRun.id,
+      };
+    }
+    if (item.itemType === "historyTest" && item.historyEntry) {
+      return {
+        source: "history",
+        testName: item.historyEntry.testName,
+        packagePath: item.historyEntry.packagePath,
+        runId: item.historyRun?.id,
+      };
+    }
+    if (item.resultTest) {
+      return {
+        source: "current",
+        testName: item.resultTest.testName,
+        packagePath: item.resultTest.packagePath,
+      };
+    }
+    if (item.subTestInfo) {
+      return {
+        source: "current",
+        testName: item.subTestInfo.fullName,
+        packagePath: item.subTestInfo.packagePath,
+      };
+    }
+    if (item.testInfo) {
+      return {
+        source: "current",
+        testName: item.testInfo.name,
+        packagePath: item.testInfo.packagePath,
+      };
+    }
+    if (item.fileInfo) {
+      return {
+        source: "current",
+        scope: "file",
+        label: path.basename(item.fileInfo.file),
+        filePath: item.fileInfo.file,
+        testName: path.basename(item.fileInfo.file),
+        packagePath: item.fileInfo.packagePath,
+      };
+    }
+    if (item.packageInfo) {
+      return {
+        source: "current",
+        scope: "package",
+        label: item.packageInfo.packageName,
+        testName: item.packageInfo.packageName,
+        packagePath: item.packageInfo.packagePath,
+      };
+    }
+    if (item.moduleInfo) {
+      return {
+        source: "current",
+        scope: "module",
+        label: item.moduleInfo.moduleName,
+        moduleRoot: item.moduleInfo.moduleRoot,
+        testName: item.moduleInfo.moduleName,
+        packagePath: item.moduleInfo.packages?.[0]?.packagePath ?? "",
+      };
+    }
+    return undefined;
   };
 
   const showTestOutputPanel = async (selected?: ResultSelectionRequest) => {
@@ -809,9 +934,11 @@ export function activate(context: vscode.ExtensionContext) {
         );
       }
     } else {
-      const firstResult = testsViewProvider
-        .getAllTestResults()
-        .find((result) => result.testName !== "(go test runner output)");
+      const allResults = testsViewProvider.getAllTestResults();
+      const firstResult =
+        allResults.find(
+          (result) => result.testName !== "(go test runner output)",
+        ) ?? allResults[0];
       if (firstResult) {
         const payload = buildSelectionPayload({
           source: "current",
@@ -824,9 +951,28 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
 
-    await vscode.commands.executeCommand("goAssistantTestsLog.focus");
+    try {
+      await vscode.commands.executeCommand("goAssistantTestsLog.focus");
+    } catch {
+      // ignore
+    }
     testResultsLogProvider.show();
   };
+
+  context.subscriptions.push(
+    testsView.onDidChangeSelection((e) => {
+      if (e.selection && e.selection.length > 0) {
+        const item = e.selection[0];
+        const selected = buildSelectionRequestFromItem(item);
+        if (selected) {
+          const payload = buildSelectionPayload(selected);
+          if (payload) {
+            resultsSelectionState.set(payload as any);
+          }
+        }
+      }
+    }),
+  );
 
   const buildHistoryEntries = (options?: {
     packagePaths?: Set<string>;
@@ -908,7 +1054,7 @@ export function activate(context: vscode.ExtensionContext) {
             ? result.status
             : "unknown",
         duration: result.duration,
-        output: result.output.output.join("\n"),
+        output: joinOutputChunks(result.output.output),
         packageCoverage:
           testsViewProvider.getPackageCoverage(result.packagePath) ?? undefined,
         fileCoverage:
@@ -1299,106 +1445,16 @@ export function activate(context: vscode.ExtensionContext) {
     "go-assistant.openTestLog",
     async (...args: any[]) => {
       const item = args[0];
-      let selected: ResultSelectionRequest | undefined;
-
+      let selected = buildSelectionRequestFromItem(item);
       if (
-        item?.itemType === "historyModule" &&
-        item?.historyRun &&
-        item?.historyModuleRoot
+        !selected &&
+        typeof args[0] === "string" &&
+        typeof args[1] === "string"
       ) {
-        selected = {
-          source: "history",
-          scope: "module",
-          label: item.label,
-          moduleRoot: item.historyModuleRoot,
-          testName: item.label,
-          packagePath: item.historyModuleRoot,
-          runId: item.historyRun.id,
-        };
-      } else if (
-        item?.itemType === "historyPackage" &&
-        item?.historyRun &&
-        item?.historyPackagePath
-      ) {
-        selected = {
-          source: "history",
-          scope: "package",
-          label: item.label,
-          testName: item.label,
-          packagePath: item.historyPackagePath,
-          runId: item.historyRun.id,
-        };
-      } else if (
-        item?.itemType === "historyFile" &&
-        item?.historyRun &&
-        item?.historyPackagePath &&
-        item?.historyFilePath
-      ) {
-        selected = {
-          source: "history",
-          scope: "file",
-          label: item.label,
-          filePath: item.historyFilePath,
-          testName: item.label,
-          packagePath: item.historyPackagePath,
-          runId: item.historyRun.id,
-        };
-      } else if (item?.itemType === "historyTest" && item?.historyEntry) {
-        selected = {
-          source: "history",
-          testName: item.historyEntry.testName,
-          packagePath: item.historyEntry.packagePath,
-          runId: item.historyRun?.id,
-        };
-      } else if (item?.resultTest) {
-        selected = {
-          source: "current",
-          testName: item.resultTest.testName,
-          packagePath: item.resultTest.packagePath,
-        };
-      } else if (typeof args[0] === "string" && typeof args[1] === "string") {
         selected = {
           source: "current",
           testName: args[0],
           packagePath: args[1],
-        };
-      } else if (item?.subTestInfo) {
-        selected = {
-          source: "current",
-          testName: item.subTestInfo.fullName,
-          packagePath: item.subTestInfo.packagePath,
-        };
-      } else if (item?.testInfo) {
-        selected = {
-          source: "current",
-          testName: item.testInfo.name,
-          packagePath: item.testInfo.packagePath,
-        };
-      } else if (item?.fileInfo) {
-        selected = {
-          source: "current",
-          scope: "file",
-          label: path.basename(item.fileInfo.file),
-          filePath: item.fileInfo.file,
-          testName: path.basename(item.fileInfo.file),
-          packagePath: item.fileInfo.packagePath,
-        };
-      } else if (item?.packageInfo) {
-        selected = {
-          source: "current",
-          scope: "package",
-          label: item.packageInfo.packageName,
-          testName: item.packageInfo.packageName,
-          packagePath: item.packageInfo.packagePath,
-        };
-      } else if (item?.moduleInfo) {
-        selected = {
-          source: "current",
-          scope: "module",
-          label: item.moduleInfo.moduleName,
-          moduleRoot: item.moduleInfo.moduleRoot,
-          testName: item.moduleInfo.moduleName,
-          packagePath: item.moduleInfo.packages?.[0]?.packagePath ?? "",
         };
       }
 
@@ -1657,7 +1713,14 @@ export function activate(context: vscode.ExtensionContext) {
           historyEntries,
         );
         testsViewProvider.updateSubTestsFromOutput(result.rawOutput);
-        showTestOutputPanel();
+        showTestOutputPanel({
+          source: "current",
+          scope: "module",
+          moduleRoot,
+          label: item.moduleInfo.moduleName,
+          testName: item.moduleInfo.moduleName,
+          packagePath: moduleRoot,
+        });
       } catch (error) {
         vscode.window.showErrorMessage(
           `Failed to run module tests: ${error instanceof Error ? error.message : String(error)}`,
@@ -1730,7 +1793,13 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       try {
-        showTestOutputPanel();
+        showTestOutputPanel({
+          source: "current",
+          scope: "package",
+          packagePath,
+          label: item.packageInfo.packageName,
+          testName: item.packageInfo.packageName,
+        });
         const result = await runTestsWithJSON(
           packagePath,
           splitGoArgs(extraFlags),
@@ -1760,7 +1829,13 @@ export function activate(context: vscode.ExtensionContext) {
         if (loaded) {
           coverageDecorator.applyDecorationsToAllEditors();
         }
-        showTestOutputPanel();
+        showTestOutputPanel({
+          source: "current",
+          scope: "package",
+          packagePath,
+          label: item.packageInfo.packageName,
+          testName: item.packageInfo.packageName,
+        });
       } catch (error) {
         vscode.window.showErrorMessage(
           `Failed to run package tests: ${error instanceof Error ? error.message : String(error)}`,
@@ -1832,7 +1907,14 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       try {
-        showTestOutputPanel();
+        showTestOutputPanel({
+          source: "current",
+          scope: "file",
+          filePath: item.fileInfo.file,
+          packagePath,
+          label: fileName,
+          testName: fileName,
+        });
         const result = await runTestsWithJSON(
           packagePath,
           [...splitGoArgs(extraFlags), "-run", testPattern],
@@ -1860,7 +1942,14 @@ export function activate(context: vscode.ExtensionContext) {
         if (loaded) {
           coverageDecorator.applyDecorationsToAllEditors();
         }
-        showTestOutputPanel();
+        showTestOutputPanel({
+          source: "current",
+          scope: "file",
+          filePath: item.fileInfo.file,
+          packagePath,
+          label: fileName,
+          testName: fileName,
+        });
       } catch (error) {
         vscode.window.showErrorMessage(
           `Failed to run file tests: ${error instanceof Error ? error.message : String(error)}`,
@@ -2008,7 +2097,7 @@ export function activate(context: vscode.ExtensionContext) {
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
       try {
-        showTestOutputPanel();
+        showTestOutputPanel({ source: "current", testName, packagePath });
         const result = await runTestsWithJSON(
           packagePath,
           [...splitGoArgs(extraFlags), "-run", `^${testName}$`],
@@ -2041,7 +2130,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (loaded) {
           coverageDecorator.applyDecorationsToAllEditors();
         }
-        showTestOutputPanel();
+        showTestOutputPanel({ source: "current", testName, packagePath });
       } catch (error) {
         vscode.window.showErrorMessage(
           `Failed to run test ${testName}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2076,7 +2165,7 @@ export function activate(context: vscode.ExtensionContext) {
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
       try {
-        showTestOutputPanel();
+        showTestOutputPanel({ source: "current", testName, packagePath });
         const result = await runTestsWithJSON(
           packagePath,
           [...splitGoArgs(extraFlags), "-run", `^${testName}$`],
@@ -2109,7 +2198,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (loaded) {
           coverageDecorator.applyDecorationsToAllEditors();
         }
-        showTestOutputPanel();
+        showTestOutputPanel({ source: "current", testName, packagePath });
       } catch (error) {
         vscode.window.showErrorMessage(
           `Failed to run test ${testName}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2336,7 +2425,7 @@ export function activate(context: vscode.ExtensionContext) {
       const extraFlags = testsViewProvider.buildExtraFlags(true, coverageFile);
 
       try {
-        showTestOutputPanel();
+        showTestOutputPanel({ source: "current", testName: fullName, packagePath });
         testsViewProvider.setLastRunSpec({
           type: "test",
           label: fullName,
@@ -2371,7 +2460,7 @@ export function activate(context: vscode.ExtensionContext) {
           includeChildrenOfTest: true,
         });
         testsViewProvider.addToHistory(fullName, historyEntries);
-        showTestOutputPanel();
+        showTestOutputPanel({ source: "current", testName: fullName, packagePath });
       } catch (error) {
         vscode.window.showErrorMessage(
           `Failed to run sub-test: ${error instanceof Error ? error.message : String(error)}`,

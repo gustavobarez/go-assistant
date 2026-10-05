@@ -72,4 +72,26 @@ suite("Go Assistant Extension Integration Suite", () => {
   test("Happy case: resetTests executes without error", async () => {
     await vscode.commands.executeCommand("go-assistant.resetTests");
   });
+
+  test("Happy case: goAssistantTestsLog.focus executes without error", async () => {
+    try {
+      await vscode.commands.executeCommand("goAssistantTestsLog.focus");
+    } catch (e) {
+      console.log("goAssistantTestsLog.focus error:", e);
+      throw e;
+    }
+  });
+
+  test("Happy case: openTestLog executes with test item", async () => {
+    const dummyItem = {
+      testInfo: {
+        name: "TestExample",
+        packagePath: "/path/to/pkg",
+        file: "/path/to/pkg/example_test.go",
+        line: 10,
+      },
+    };
+    // Should execute without throwing
+    await vscode.commands.executeCommand("go-assistant.openTestLog", dummyItem);
+  });
 });

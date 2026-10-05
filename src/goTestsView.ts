@@ -2680,7 +2680,14 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
 
     const existing = this.testResults.get(resultKey);
     if (existing) {
-      existing.status = resultStatus;
+      // Late output events (e.g. "PASS", "ok ...", coverage lines) must not
+      // downgrade an already finished result back to "unknown".
+      const keepFinal =
+        status === "unknown" &&
+        (existing.status === "pass" || existing.status === "fail");
+      if (!keepFinal) {
+        existing.status = resultStatus;
+      }
       if (duration !== undefined) {
         existing.duration = duration;
         existing.output.duration = duration;
@@ -2755,11 +2762,18 @@ export class GoTestsViewProvider implements vscode.TreeDataProvider<TestTreeItem
   }
 
   getTestResult(testName: string, packagePath: string): TestResult | null {
-    for (const candidate of this.candidateTestNames(testName)) {
+    const candidates = this.candidateTestNames(testName);
+    for (const candidate of candidates) {
       const result = this.testResults.get(
         this.makeResultKey(packagePath, candidate),
       );
       if (result) {
+        return result;
+      }
+    }
+    // Fallback: search by candidate test name across any package
+    for (const result of this.testResults.values()) {
+      if (candidates.includes(result.testName)) {
         return result;
       }
     }

@@ -42,6 +42,16 @@ export class SelectionState {
   }
 }
 
+function getNonce(): string {
+  let text = "";
+  const possible =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  for (let i = 0; i < 32; i++) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  }
+  return text;
+}
+
 export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "goAssistantTestsLog";
   private _view?: vscode.WebviewView;
@@ -67,7 +77,7 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this.extensionUri],
     };
 
-    webviewView.webview.html = this.getHtmlForWebview();
+    webviewView.webview.html = this.getHtmlForWebview(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage((message) => {
       switch (message.type) {
@@ -116,12 +126,18 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private getHtmlForWebview(): string {
+  public getHtmlForWebview(webview?: vscode.Webview): string {
+    const nonce = getNonce();
+    const cspSource = webview?.cspSource ?? "";
+    const currentPayload = this.selectionState.get() ?? null;
+    const payloadJson = JSON.stringify(currentPayload).replace(/</g, "\\u003c");
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${cspSource};">
   <title>Test Log</title>
   <style>
     :root {
@@ -217,6 +233,18 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
       border: 1px solid rgba(36, 114, 200, 0.4);
     }
 
+    .badge-skip {
+      background-color: rgba(204, 167, 0, 0.2);
+      color: var(--ansi-yellow);
+      border: 1px solid rgba(204, 167, 0, 0.4);
+    }
+
+    .badge-unknown {
+      background-color: rgba(128, 128, 128, 0.2);
+      color: var(--ansi-gray);
+      border: 1px solid rgba(128, 128, 128, 0.4);
+    }
+
     .meta-info {
       color: var(--ansi-gray);
       font-size: 11px;
@@ -297,12 +325,22 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
       font-weight: 600;
     }
 
+    .line-skip {
+      color: var(--ansi-yellow);
+      font-weight: 600;
+    }
+
     .line-error {
       color: var(--ansi-red);
     }
 
     .line-file-loc {
       color: var(--ansi-yellow);
+    }
+
+    .empty-output {
+      color: var(--ansi-gray);
+      font-style: italic;
     }
 
     .empty-state {
@@ -364,7 +402,7 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
     <pre class="terminal-output" id="terminalOutput" style="display: none;"></pre>
   </div>
 
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const headerEl = document.getElementById('header');
     const titleEl = document.getElementById('testTitle');
@@ -390,20 +428,17 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
     }
 
     function colorizeGoTestLine(escapedLine) {
-      if (escapedLine.startsWith('=== RUN') || escapedLine.startsWith('=== CONT')) {
+      if (escapedLine.startsWith('=== RUN') || escapedLine.startsWith('=== CONT') || escapedLine.startsWith('=== PAUSE')) {
         return '<span class="line-run">' + escapedLine + '</span>';
       }
-      if (escapedLine.startsWith('--- PASS:')) {
+      if (escapedLine.startsWith('--- PASS:') || escapedLine === 'PASS' || /^ok\\s+/.test(escapedLine)) {
         return '<span class="line-pass">' + escapedLine + '</span>';
       }
-      if (escapedLine.startsWith('--- FAIL:')) {
+      if (escapedLine.startsWith('--- FAIL:') || escapedLine === 'FAIL' || /^FAIL\\s+/.test(escapedLine)) {
         return '<span class="line-fail">' + escapedLine + '</span>';
       }
-      if (escapedLine === 'PASS' || escapedLine.startsWith('ok  \\t') || escapedLine.startsWith('ok\\t')) {
-        return '<span class="line-pass">' + escapedLine + '</span>';
-      }
-      if (escapedLine === 'FAIL' || escapedLine.startsWith('FAIL\\t')) {
-        return '<span class="line-fail">' + escapedLine + '</span>';
+      if (escapedLine.startsWith('--- SKIP:') || escapedLine === 'SKIP') {
+        return '<span class="line-skip">' + escapedLine + '</span>';
       }
       if (/^\\s*([a-zA-Z0-9_\\-\\.\\/]+_test\\.go:\\d+:)/.test(escapedLine)) {
         return escapedLine.replace(/^(\\s*)([a-zA-Z0-9_\\-\\.\\/]+_test\\.go:\\d+:)/, '$1<span class="line-file-loc">$2</span>');
@@ -415,7 +450,7 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
     }
 
     function renderLog(payload) {
-      if (!payload || !payload.output) {
+      if (!payload) {
         headerEl.style.display = 'none';
         outputEl.style.display = 'none';
         outputEl.innerHTML = '';
@@ -425,14 +460,19 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
       }
 
       emptyEl.style.display = 'none';
-      outputEl.style.display = 'block';
       headerEl.style.display = 'flex';
+      outputEl.style.display = 'block';
 
-      titleEl.textContent = payload.testName;
-      titleEl.title = payload.testName;
+      titleEl.textContent = payload.testName || 'Test Output';
+      titleEl.title = payload.testName || 'Test Output';
 
       const status = (payload.status || 'unknown').toLowerCase();
-      badgeEl.className = 'badge ' + (status === 'pass' ? 'badge-pass' : status === 'fail' ? 'badge-fail' : 'badge-running');
+      badgeEl.className = 'badge ' + (
+        status === 'pass' ? 'badge-pass' :
+        status === 'fail' ? 'badge-fail' :
+        status === 'running' ? 'badge-running' :
+        status === 'skip' ? 'badge-skip' : 'badge-unknown'
+      );
       badgeEl.textContent = status.toUpperCase();
 
       const durationStr = typeof payload.duration === 'number' && Number.isFinite(payload.duration)
@@ -445,15 +485,18 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
       const metaParts = [durationStr, coverageStr].filter(Boolean);
       metaEl.textContent = metaParts.length > 0 ? metaParts.join(' · ') : '';
 
-      currentRawOutput = payload.output;
+      currentRawOutput = payload.output || '';
 
-      const rawLines = payload.output
-        .replace(/\\r\\n/g, '\\n')
-        .replace(/\\n/g, '\\n')
-        .split(/\\r?\\n/);
+      if (!currentRawOutput.trim()) {
+        outputEl.innerHTML = '<span class="empty-output">(no output recorded for this test)</span>';
+      } else {
+        const rawLines = currentRawOutput
+          .replace(/\\r\\n/g, '\\n')
+          .split('\\n');
 
-      const formattedLines = rawLines.map(line => colorizeGoTestLine(escapeHtml(line)));
-      outputEl.innerHTML = formattedLines.join('\\n');
+        const formattedLines = rawLines.map(line => colorizeGoTestLine(escapeHtml(line)));
+        outputEl.innerHTML = formattedLines.join('\\n');
+      }
 
       scrollArea.scrollTop = scrollArea.scrollHeight;
     }
@@ -474,10 +517,14 @@ export class GoTestResultsLogProvider implements vscode.WebviewViewProvider {
     });
 
     window.addEventListener('message', event => {
-      if (event.data?.type === 'setLog') {
+      if (event.data && event.data.type === 'setLog') {
         renderLog(event.data.payload);
       }
     });
+
+    // Render initial state immediately
+    const initialPayload = ${payloadJson};
+    renderLog(initialPayload);
 
     vscode.postMessage({ type: 'ready' });
   </script>
